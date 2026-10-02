@@ -23,14 +23,51 @@ export function tipTotal(tip, subtotal, tax) {
   return Math.max(0, Math.round((base * (tip.percent || 0)) / 100));
 }
 
+const EPS = 0.001;
+
+// Someone can say "I had a third" of a shared line. People with a fixed
+// portion pay exactly that; everyone else who claimed the line splits what's
+// left evenly. Returns each claimer's fraction of the line, always summing to 1.
+export function portionShares(claimers, portion = {}) {
+  const fixed = claimers.filter((id) => portion[id] > 0);
+  const free = claimers.filter((id) => !(portion[id] > 0));
+  const sumFixed = fixed.reduce((a, id) => a + portion[id], 0);
+  const out = {};
+  if (free.length && sumFixed < 1 - EPS) {
+    fixed.forEach((id) => (out[id] = portion[id]));
+    free.forEach((id) => (out[id] = (1 - sumFixed) / free.length));
+  } else {
+    // Portions don't fit (over or under 100%): scale them so the line is still
+    // fully paid. findIssues flags it so someone fixes it.
+    fixed.forEach((id) => (out[id] = portion[id] / sumFixed));
+    free.forEach((id) => (out[id] = 0));
+  }
+  return out;
+}
+
+function portionIssue(claimers, portion = {}) {
+  const fixed = claimers.filter((id) => portion[id] > 0);
+  if (!fixed.length) return null;
+  const free = claimers.length - fixed.length;
+  const sum = fixed.reduce((a, id) => a + portion[id], 0);
+  if (sum > 1 + EPS || (free && sum > 1 - EPS)) return { type: "share-over", sum };
+  if (!free && sum < 1 - EPS) return { type: "share-under", sum };
+  return { type: "share-ok", sum };
+}
+
 // Which items still need a human decision.
-export function findIssues(items, people, claims) {
+export function findIssues(items, people, claims, portions = {}) {
   const ids = new Set(people.map((p) => p.id));
   const issues = [];
   for (const item of items) {
     const c = claims[item.id] || {};
     const claimers = Object.keys(c).filter((id) => ids.has(id) && c[id] > 0);
     const units = claimers.reduce((a, id) => a + c[id], 0);
+    const pi = claimers.length ? portionIssue(claimers, portions[item.id]) : null;
+    if (pi) {
+      if (pi.type !== "share-ok") issues.push({ type: pi.type, item, claimers, units, sum: pi.sum });
+      continue;
+    }
     if (!claimers.length) issues.push({ type: "unclaimed", item, claimers, units });
     else if (!item.shared && units > item.qty) issues.push({ type: "over", item, claimers, units });
     else if (!item.shared && !item.restEven && units < item.qty) issues.push({ type: "under", item, claimers, units });
@@ -38,7 +75,7 @@ export function findIssues(items, people, claims) {
   return issues;
 }
 
-export function computeSplit({ items, people, claims, tax = 0, fees = [], tip, covered = [] }) {
+export function computeSplit({ items, people, claims, portions = {}, tax = 0, fees = [], tip, covered = [] }) {
   const n = people.length;
   const subtotal = items.reduce((a, it) => a + it.price, 0);
 
@@ -49,6 +86,18 @@ export function computeSplit({ items, people, claims, tax = 0, fees = [], tip, c
   for (const it of items) {
     const c = claims[it.id] || {};
     let w = people.map((p) => c[p.id] || 0);
+    const claimerIds = people.filter((p) => c[p.id] > 0).map((p) => p.id);
+    const portion = portions[it.id] || {};
+    if (claimerIds.some((id) => portion[id] > 0)) {
+      const share = portionShares(claimerIds, portion);
+      people.forEach((p, i) => {
+        const cents = it.price * (share[p.id] || 0);
+        if (!cents) return;
+        food[i] += cents;
+        itemShares[i].push({ id: it.id, name: it.name, cents, units: c[p.id], portion: portion[p.id] || 0 });
+      });
+      continue;
+    }
     let sum = w.reduce((a, b) => a + b, 0);
     if (!sum) { w = w.map(() => 1); sum = n; }
     // A partly claimed multi-unit item: claimers pay for their units and the

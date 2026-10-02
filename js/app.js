@@ -1,5 +1,5 @@
 import { parseReceipt } from "./parse.js";
-import { computeSplit, findIssues } from "./split.js";
+import { computeSplit, findIssues, portionShares } from "./split.js";
 import { Room, newCode, cleanCode } from "./sync.js";
 
 // Pen colors people write with. Red is kept out: it belongs to conflicts.
@@ -38,6 +38,7 @@ const blank = () => ({
   people: [],
   payer: null,
   claims: {},
+  portions: {},
   claimMode: "together",
   claimChecked: false,
   active: null,
@@ -115,8 +116,16 @@ function nextInk() {
   return INKS.find((c) => !used.has(c)) ?? INKS[S.people.length % INKS.length];
 }
 
-const split = () => computeSplit({ items: S.items, people: S.people, claims: S.claims, tax: S.tax, fees: S.fees, tip: S.tip, covered: S.covered });
-const issues = () => findIssues(S.items, S.people, S.claims);
+const split = () => computeSplit({ items: S.items, people: S.people, claims: S.claims, portions: S.portions, tax: S.tax, fees: S.fees, tip: S.tip, covered: S.covered });
+// Claiming together (or live), tapping the same dish means you shared it; only
+// pass-the-phone mode treats a double claim as a possible mistake.
+const issues = () => findIssues(S.items, S.people, S.claims, S.portions)
+  .filter((i) => !(S.claimMode === "together" && i.type === "over" && i.item.qty === 1));
+
+// Portions people can pick for a shared line, and how they read.
+const FRACTIONS = [[1 / 4, "¼"], [1 / 3, "⅓"], [1 / 2, "½"], [2 / 3, "⅔"], [3 / 4, "¾"]];
+const fracLabel = (f) => (FRACTIONS.find(([v]) => Math.abs(v - f) < 0.01) || [0, `${Math.round(f * 100)}%`])[1];
+let openPortion = null;
 
 function canVisit(id) {
   if (id === "receipt") return true;
@@ -145,7 +154,7 @@ const marksHidden = () => S.step === "claim" && S.claimMode === "private" && !S.
 function visibleIssues() {
   if (S.step !== "claim") return [];
   if (S.claimMode === "private") return S.priv.revealed ? issues() : [];
-  return S.claimChecked ? issues() : issues().filter((i) => i.type === "over");
+  return S.claimChecked ? issues() : issues().filter((i) => i.type !== "unclaimed" && i.type !== "under");
 }
 
 // ---------- receipt ----------
@@ -237,12 +246,12 @@ function lineHTML(it, { editing, act, flag }) {
     const mk = it.id + ":" + p.id;
     const fresh = !seenMarks.has(mk);
     seenMarks.add(mk);
-    return `<span class="mark${fresh ? " new" : ""}" style="--ink:${p.ink};--r:${rot}deg">${esc(initials(p))}${c[p.id] > 1 ? `<small>×${c[p.id]}</small>` : ""}</span>`;
+    return `<span class="mark${fresh ? " new" : ""}" style="--ink:${p.ink};--r:${rot}deg">${esc(initials(p))}${S.portions[it.id]?.[p.id] ? `<small>${fracLabel(S.portions[it.id][p.id])}</small>` : c[p.id] > 1 ? `<small>×${c[p.id]}</small>` : ""}</span>`;
   }).join("");
   const mine = act && c[act] > 0;
   const inner = `
     <span class="l-qty">${it.qty > 1 ? it.qty : ""}</span>
-    <span class="l-name">${esc(it.name)}${it.shared ? ` <span class="l-tag">shared</span>` : ""}</span>
+    <span class="l-name">${esc(it.name)}${it.shared && claimers.length < 2 ? ` <span class="l-tag">shared</span>` : ""}</span>
     <span class="l-marks">${marks}</span>
     <span class="l-price">${money(it.price)}</span>`;
   const body = act
@@ -255,6 +264,21 @@ function lineHTML(it, { editing, act, flag }) {
         <button data-action="units" data-id="${it.id}" data-d="1" aria-label="One more ${esc(it.name)}" ${c[act] >= it.qty ? "disabled" : ""}>+</button>
       </div>`
     : "";
+  const others = S.people.some((p) => p.id !== act && c[p.id] > 0) && !marksHidden();
+  let portionRow = "";
+  if (act && mine && it.qty === 1 && others) {
+    const mineP = S.portions[it.id]?.[act] || 0;
+    const name = esc(person(act).name);
+    portionRow = openPortion === it.id
+      ? `<div class="l-portion open" style="--ink:${inkOf(act)}" role="group" aria-label="${name}'s share of ${esc(it.name)}">
+          <button data-action="portion" data-id="${it.id}" data-f="0" aria-pressed="${!mineP}">even</button>
+          ${FRACTIONS.map(([v, l]) => `<button data-action="portion" data-id="${it.id}" data-f="${v}" aria-pressed="${Math.abs(mineP - v) < 0.01}">${l}</button>`).join("")}
+        </div>`
+      : `<div class="l-portion" style="--ink:${inkOf(act)}">
+          <span>${name}: ${mineP ? `had ${fracLabel(mineP)}` : "even share"}</span>
+          <button class="l-portion-change" data-action="portion-open" data-id="${it.id}">change</button>
+        </div>`;
+  }
   const ck = it.id + ":" + flag?.type;
   const drawn = seenCircles.has(ck);
   if (flag) seenCircles.add(ck);
@@ -262,7 +286,7 @@ function lineHTML(it, { editing, act, flag }) {
     ? `<svg class="circle${drawn ? " drawn" : ""}" viewBox="0 0 300 44" preserveAspectRatio="none" aria-hidden="true"><path d="M14 30C4 14 52 4 150 4s150 6 146 20c-4 16-90 18-150 17C60 40 8 38 8 22c0-6 8-10 20-13"/></svg>`
     : "";
   const flash = flashLines.has(it.id);
-  return `<li class="line${mine ? " mine" : ""}${flag ? " flagged" : ""}${flash ? " flash" : ""}" style="--ink:${act ? inkOf(act) : "var(--ui)"}">${body}${stepper}${circle}</li>`;
+  return `<li class="line${mine ? " mine" : ""}${flag ? " flagged" : ""}${flash ? " flash" : ""}" style="--ink:${act ? inkOf(act) : "var(--ui)"}">${body}${stepper}${portionRow}${circle}</li>`;
 }
 
 // The stamp should slam once, when the last person pays, not on every render.
@@ -505,6 +529,12 @@ function issuesHTML(list, final) {
           : `${joined(claimers)} both claimed ${esc(item.name)}`;
         actions = `<button class="btn btn-sm" data-action="fix-shared" data-id="${item.id}">They shared it</button>
           ${claimers.map((id) => `<button class="chip chip-sm" style="--ink:${inkOf(id)}" data-action="fix-give" data-id="${item.id}" data-pid="${id}">Only ${esc(person(id).name)}</button>`).join("")}`;
+      } else if (type === "share-over" || type === "share-under") {
+        const pct = Math.round((list.find((i) => i.item === item).sum || 0) * 100);
+        title = type === "share-over"
+          ? `Shares of ${esc(item.name)} add up to more than all of it`
+          : `Shares of ${esc(item.name)} only cover ${pct}%`;
+        actions = `<button class="btn btn-sm" data-action="portion-clear" data-id="${item.id}">Split it evenly instead</button>`;
       } else {
         title = `Only ${units} of ${item.qty} ${esc(item.name)} claimed`;
         actions = `<button class="btn btn-sm" data-action="fix-shared" data-id="${item.id}">${joined(claimers)} ${claimers.length === 1 ? "had" : "split"} all ${item.qty}</button>
@@ -520,6 +550,12 @@ function claimedSoFar() {
   for (const it of S.items) {
     const c = S.claims[it.id] || {};
     const ids = S.people.map((p) => p.id).filter((id) => c[id] > 0);
+    const portion = S.portions[it.id] || {};
+    if (ids.some((id) => portion[id] > 0)) {
+      const share = portionShares(ids, portion);
+      ids.forEach((id) => { out[id] += it.price * share[id]; });
+      continue;
+    }
     const units = ids.reduce((a, id) => a + c[id], 0);
     const pool = it.shared || units > it.qty ? units : it.qty;
     ids.forEach((id) => { out[id] += (it.price * c[id]) / pool; });
@@ -635,7 +671,7 @@ function stageSettle() {
         ${r.items.length ? `<details><summary>What ${esc(r.p.name)} had</summary><ul>${r.items.map((i) => {
           const it = S.items.find((x) => x.id === i.id);
           const sharers = Object.values(S.claims[it.id] || {}).filter((v) => v > 0).length;
-          const note = it.qty > 1 && !it.shared && sharers ? `${i.units} of ${it.qty}` : (sharers !== 1 || it.shared ? "shared" : "");
+          const note = i.portion ? fracLabel(i.portion) : it.qty > 1 && !it.shared && sharers ? `${i.units} of ${it.qty}` : (sharers !== 1 || it.shared ? "shared" : "");
           return `<li><span>${esc(i.name)}${note ? ` <small>${note}</small>` : ""}</span><span class="num">${money(Math.round(i.cents))}</span></li>`;
         }).join("")}</ul></details>` : ""}
         <svg class="strike" viewBox="0 0 400 20" preserveAspectRatio="none" aria-hidden="true"><path d="M4 12C90 6 200 14 396 7"/></svg>
@@ -662,6 +698,7 @@ function renderOverlay() {
   renderLivePill();
   if (joining || liveSheet) {
     o.innerHTML = joining ? joinSheetHTML() : liveSheetHTML();
+    if (!joining) drawQR();
     document.body.classList.add("locked");
     return;
   }
@@ -881,6 +918,7 @@ function toShared() {
     if (it.shared) m["sh:" + it.id] = true;
     if (it.restEven) m["re:" + it.id] = true;
     for (const [pid, u] of Object.entries(S.claims[it.id] || {})) if (u > 0) m[`c:${it.id}:${pid}`] = u;
+    for (const [pid, f] of Object.entries(S.portions[it.id] || {})) if (f > 0) m[`f:${it.id}:${pid}`] = f;
   }
   m.tip = S.tip;
   if (S.covered.length) m.cov = [...S.covered].sort();
@@ -906,10 +944,11 @@ function fromShared(d) {
     .sort((a, b) => a.at - b.at || (a.id < b.id ? -1 : 1));
   S.payer = d.payer ?? S.people[0]?.id ?? null;
   S.claims = {};
+  S.portions = {};
   for (const [k, v] of Object.entries(d)) {
-    if (!k.startsWith("c:")) continue;
+    if (!k.startsWith("c:") && !k.startsWith("f:")) continue;
     const [, iid, pid] = k.split(":");
-    (S.claims[iid] ||= {})[pid] = v;
+    (k[0] === "c" ? (S.claims[iid] ||= {}) : (S.portions[iid] ||= {}))[pid] = v;
   }
   if (d.tip) S.tip = { ...S.tip, ...d.tip };
   S.covered = d.cov || [];
@@ -986,6 +1025,35 @@ function leaveLive() {
   saveLive();
 }
 
+// QR library loads only when someone opens the live sheet.
+const qrCache = new Map();
+let qrLib = null;
+function drawQR() {
+  const url = shareURL();
+  if (qrCache.has(url)) return;
+  qrLib ||= new Promise((resolve, reject) => {
+    const sc = document.createElement("script");
+    sc.src = "https://cdn.jsdelivr.net/npm/qrcode-generator@1.4.4/qrcode.js";
+    sc.onload = () => resolve(window.qrcode);
+    sc.onerror = () => { qrLib = null; reject(new Error("qr")); };
+    document.head.append(sc);
+  });
+  qrLib.then((qrcode) => {
+    const qr = qrcode(0, "M");
+    qr.addData(url);
+    qr.make();
+    const n = qr.getModuleCount();
+    let d = "";
+    for (let r = 0; r < n; r++) for (let c = 0; c < n; c++) if (qr.isDark(r, c)) d += `M${c} ${r}h1v1h-1z`;
+    qrCache.set(url, `<svg viewBox="-2 -2 ${n + 4} ${n + 4}" shape-rendering="crispEdges"><path d="${d}"/></svg>`);
+    const el = $("#qr");
+    if (el && live && shareURL() === url) el.innerHTML = qrCache.get(url);
+  }).catch(() => {
+    const el = $("#qr");
+    if (el) el.innerHTML = `<p class="hint">QR code needs a connection. Send the link instead.</p>`;
+  });
+}
+
 function shareURL() {
   return `${location.origin}${location.pathname}#join=${live.code}`;
 }
@@ -1011,9 +1079,12 @@ function liveSheetHTML() {
       <div class="sheet-card" role="dialog" aria-modal="true" aria-labelledby="live-title" data-stop>
         <span class="sheet-grip" aria-hidden="true"></span>
         <p class="label" id="live-title">Live bill</p>
-        <p class="code-big num" aria-label="Code ${live.code.split("").join(" ")}">${live.code.split("").map((c) => `<span>${c}</span>`).join("")}</p>
-        <p class="hint">Friends open the link, or go to Chit and tap “Join their bill”, then claim what they had on their own phone.</p>
+        <div class="qr-wrap">
+          <div class="qr" id="qr" role="img" aria-label="QR code to join this bill">${qrCache.get(shareURL()) || ""}</div>
+          <p class="qr-caption">Point a phone camera here to join</p>
+        </div>
         <button class="btn btn-go btn-wide" data-action="share-link">Send the link<span aria-hidden="true">→</span></button>
+        <p class="code-small">Can't scan? Code <span class="num">${live.code}</span></p>
         <p class="label sheet-label">This phone belongs to</p>
         <div class="chips">${S.people.map((p) => `
           <button class="chip" style="--ink:${p.ink}" data-action="set-me" data-id="${p.id}" aria-pressed="${live.me === p.id}">${scribble(p.ink)}${esc(p.name)}</button>`).join("")}
@@ -1137,7 +1208,7 @@ const actions = {
   "leave-live": () => { leaveLive(); toast("This phone left the live bill. Your copy stays here."); },
   "share-link": () => {
     const url = shareURL();
-    const text = `Join the bill on Chit. Code ${live.code}`;
+    const text = "Join the bill on Chit";
     if (navigator.share) navigator.share({ title: "Chit", text, url }).catch(() => {});
     else copyText(url).then(() => toast("Link copied. Send it to the table."), () => toast(`Share this code: ${live.code}`));
     return false;
@@ -1203,8 +1274,22 @@ const actions = {
     if (!who) return false;
     const c = (S.claims[el.dataset.id] ||= {});
     c[who] = c[who] > 0 ? 0 : 1;
+    if (!c[who] && S.portions[el.dataset.id]) delete S.portions[el.dataset.id][who];
     navigator.vibrate?.(c[who] ? 8 : 4);
   },
+  "portion-open": (el) => { openPortion = el.dataset.id; },
+  portion: (el) => {
+    const who = activeClaimer();
+    const id = el.dataset.id;
+    const f = Number(el.dataset.f);
+    const p = (S.portions[id] ||= {});
+    if (f) p[who] = f;
+    else delete p[who];
+    if (f) S.items.find((i) => i.id === id).shared = true;
+    openPortion = null;
+    navigator.vibrate?.(6);
+  },
+  "portion-clear": (el) => { delete S.portions[el.dataset.id]; },
   units: (el) => {
     const who = activeClaimer();
     const it = S.items.find((i) => i.id === el.dataset.id);
@@ -1219,11 +1304,13 @@ const actions = {
   reveal: () => { S.priv.revealed = true; revealing = true; },
   "fix-everyone": (el) => {
     const it = S.items.find((i) => i.id === el.dataset.id);
+    delete S.portions[it.id];
     S.claims[it.id] = Object.fromEntries(S.people.map((p) => [p.id, 1]));
     it.shared = true;
   },
   "fix-give": (el) => {
     const it = S.items.find((i) => i.id === el.dataset.id);
+    delete S.portions[it.id];
     S.claims[it.id] = { [el.dataset.pid]: it.qty };
     it.shared = false;
   },

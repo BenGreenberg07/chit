@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { allocate, computeSplit, findIssues } from "../js/split.js";
+import { allocate, computeSplit, findIssues, portionShares } from "../js/split.js";
 import { parseReceipt } from "../js/parse.js";
 
 const sum = (a) => a.reduce((x, y) => x + y, 0);
@@ -68,4 +68,24 @@ VISA ****1234 75.90`);
   assert.equal(r.tax, 540);
   assert.equal(r.total, 7590);
   assert.deepEqual(r.fees.map((f) => f.amount), [-500, 300]);
+});
+
+test("portions: fixed shares pay exactly, the rest split evenly", () => {
+  const s = portionShares(["a", "b", "c"], { a: 0.5 });
+  assert.equal(s.a, 0.5);
+  assert.ok(Math.abs(s.b - 0.25) < 1e-9 && Math.abs(s.c - 0.25) < 1e-9);
+  const over = portionShares(["a", "b"], { a: 0.75, b: 0.5 });
+  assert.ok(Math.abs(over.a + over.b - 1) < 1e-9);
+});
+
+test("portions flow through the split and get flagged when they don't fit", () => {
+  const pizza = [{ id: "p", name: "Pizza", qty: 1, price: 3000 }];
+  const claims = { p: { a: 1, b: 1 } };
+  const r = computeSplit({ items: pizza, people, claims, portions: { p: { a: 2 / 3 } }, tip: { ...tip, percent: 0 } });
+  assert.equal(r.rows[0].food, 2000);
+  assert.equal(r.rows[1].food, 1000);
+  assert.equal(sum(r.rows.map((x) => x.total)), 3000);
+  assert.deepEqual(findIssues(pizza, people, claims, { p: { a: 2 / 3 } }), []);
+  assert.equal(findIssues(pizza, people, claims, { p: { a: 0.75, b: 0.5 } })[0].type, "share-over");
+  assert.equal(findIssues(pizza, people, claims, { p: { a: 0.25, b: 0.25 } })[0].type, "share-under");
 });
