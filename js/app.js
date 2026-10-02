@@ -1043,7 +1043,10 @@ function joinSheetHTML() {
     body = `
       <h2 class="sheet-title">Finding bill <span class="num">${esc(j.code)}</span></h2>
       <div class="finding" aria-hidden="true"><i></i><i></i><i></i></div>
-      <p class="hint">Asking the phones already in it for the receipt.</p>`;
+      ${j.slow
+        ? `<p class="hint">Still listening. Ask whoever started the bill to open Chit on their phone; you'll be let in as soon as they do. If the code might be wrong, try it again.</p>
+           <button class="btn btn-quiet btn-wide" data-action="join-retype">Type the code again</button>`
+        : `<p class="hint">Asking the phones already in it for the receipt.</p>`}`;
   } else {
     body = `
       <h2 class="sheet-title">Which one are you?</h2>
@@ -1082,14 +1085,12 @@ function beginJoin(code) {
   saveLive();
   joining = { phase: "finding", code };
   startRoom({ seed: false });
+  // Keep listening for as long as the joiner wants: the host's phone may just
+  // be asleep, and it sends the bill the moment Chit is opened again.
   clearTimeout(beginJoin.timer);
   beginJoin.timer = setTimeout(() => {
-    if (joining?.phase !== "finding") return;
-    room?.close();
-    room = null;
-    live = null;
-    saveLive();
-    joining = { phase: "enter", code, error: `No one answered for ${code}. Check the code, and make sure whoever started the bill has Chit open.` };
+    if (joining?.phase !== "finding" || joining.code !== code) return;
+    joining.slow = true;
     render();
   }, 12000);
 }
@@ -1147,6 +1148,12 @@ const actions = {
     joining = null;
   },
   "join-as": (el) => finishJoin(el.dataset.id),
+  "join-retype": () => {
+    const code = joining?.code || "";
+    leaveLive();
+    joining = { phase: "enter", code };
+    requestAnimationFrame(() => $(".code-input")?.select());
+  },
   goto: (el) => {
     if (!canVisit(el.dataset.step)) return false;
     S.step = el.dataset.step;
