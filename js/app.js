@@ -117,10 +117,7 @@ function nextInk() {
 }
 
 const split = () => computeSplit({ items: S.items, people: S.people, claims: S.claims, portions: S.portions, tax: S.tax, fees: S.fees, tip: S.tip, covered: S.covered });
-// Claiming together (or live), tapping the same dish means you shared it; only
-// pass-the-phone mode treats a double claim as a possible mistake.
-const issues = () => findIssues(S.items, S.people, S.claims, S.portions)
-  .filter((i) => !(S.claimMode === "together" && i.type === "over" && i.item.qty === 1));
+const issues = () => findIssues(S.items, S.people, S.claims, S.portions);
 
 // Portions people can pick for a shared line, and how they read.
 const FRACTIONS = [[1 / 4, "¼"], [1 / 3, "⅓"], [1 / 2, "½"], [2 / 3, "⅔"], [3 / 4, "¾"]];
@@ -266,7 +263,7 @@ function lineHTML(it, { editing, act, flag }) {
     : "";
   const others = S.people.some((p) => p.id !== act && c[p.id] > 0) && !marksHidden();
   let portionRow = "";
-  if (act && mine && it.qty === 1 && others) {
+  if (act && mine && it.qty === 1 && others && it.shared) {
     const mineP = S.portions[it.id]?.[act] || 0;
     const name = esc(person(act).name);
     portionRow = openPortion === it.id
@@ -275,8 +272,8 @@ function lineHTML(it, { editing, act, flag }) {
           ${FRACTIONS.map(([v, l]) => `<button data-action="portion" data-id="${it.id}" data-f="${v}" aria-pressed="${Math.abs(mineP - v) < 0.01}">${l}</button>`).join("")}
         </div>`
       : `<div class="l-portion" style="--ink:${inkOf(act)}">
-          <span>${name}: ${mineP ? `had ${fracLabel(mineP)}` : "even share"}</span>
-          <button class="l-portion-change" data-action="portion-open" data-id="${it.id}">change</button>
+          <span>${name}: ${mineP ? `had ${fracLabel(mineP)}` : "split evenly"}</span>
+          <button class="l-portion-change" data-action="portion-open" data-id="${it.id}">uneven?</button>
         </div>`;
   }
   const ck = it.id + ":" + flag?.type;
@@ -456,8 +453,8 @@ function stageClaim() {
       : toTip(false);
     top = `
       <p class="hint hint-top">${live
-        ? "Claiming for someone without their phone? Pick their name first. Shared a dish? Everyone who had some taps it."
-        : "Pick a name, then tap what they had on the receipt. Shared a dish? Everyone who had some taps it."}</p>
+        ? "Claiming for someone without their phone? Pick their name first. Shared a dish? Everyone who had some taps it, then marks it shared."
+        : "Pick a name, then tap what they had on the receipt. Shared a dish? Everyone who had some taps it, then marks it shared."}</p>
       <div class="dock">
         <div class="dock-chips">${S.people.map((p) => `
           <button class="chip" style="--ink:${p.ink}" data-action="active" data-id="${p.id}" aria-pressed="${S.active === p.id}">${scribble(p.ink)}${esc(p.name)}${live?.me === p.id ? " <small>(you)</small>" : ""}</button>`).join("")}
@@ -526,7 +523,7 @@ function issuesHTML(list, final) {
       } else if (type === "over") {
         title = item.qty > 1
           ? `${units} ${esc(item.name)} claimed, but there were ${item.qty}`
-          : `${joined(claimers)} both claimed ${esc(item.name)}`;
+          : `${joined(claimers)} ${claimers.length === 2 ? "both" : "all"} claimed ${esc(item.name)}`;
         actions = `<button class="btn btn-sm" data-action="fix-shared" data-id="${item.id}">They shared it</button>
           ${claimers.map((id) => `<button class="chip chip-sm" style="--ink:${inkOf(id)}" data-action="fix-give" data-id="${item.id}" data-pid="${id}">Only ${esc(person(id).name)}</button>`).join("")}`;
       } else if (type === "share-over" || type === "share-under") {
