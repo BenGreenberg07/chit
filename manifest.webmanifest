@@ -1,0 +1,14 @@
+{
+  "name": "Chit",
+  "short_name": "Chit",
+  "description": "Split a restaurant bill from a photo of the receipt.",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "background_color": "#d8dfdc",
+  "theme_color": "#d8dfdc",
+  "icons": [
+    { "src": "assets/icon-192.png", "sizes": "192x192", "type": "image/png" },
+    { "src": "assets/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any maskable" }
+  ]
+}

@@ -1,0 +1,48 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#d8dfdc">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <title>Chit</title>
+  <meta name="description" content="Split a restaurant bill from a photo of the receipt.">
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Cpath d='M7 3h18v25l-3-2-3 2-3-2-3 2-3-2-3 2z' fill='%23fcfcfa' stroke='%2315202b' stroke-width='2'/%3E%3Cpath d='M11 11h10M11 16h7' stroke='%232447b5' stroke-width='2.4' stroke-linecap='round'/%3E%3C/svg%3E">
+  <link rel="manifest" href="manifest.webmanifest">
+  <link rel="apple-touch-icon" href="assets/icon-180.png">
+  <meta name="apple-mobile-web-app-title" content="Chit">
+  <meta name="apple-mobile-web-app-status-bar-style" content="default">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="format-detection" content="telephone=no">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Nanum+Pen+Script&family=Schibsted+Grotesk:wght@400;500;600;700;800;900&family=Spline+Sans+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="styles.css">
+  <script src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js" defer></script>
+  <script type="module" src="js/app.js"></script>
+</head>
+<body>
+  <header class="bar">
+    <a class="wordmark" href="./" aria-label="Chit, start page">
+      chit<svg class="wordmark-tick" viewBox="0 0 40 16" aria-hidden="true"><path d="M2 9c6 3 8 5 10 5C16 8 26 3 38 2"/></svg>
+    </a>
+    <span class="bar-merchant" id="bar-merchant"></span>
+    <button class="btn btn-quiet btn-sm" data-action="new" id="new-bill">New bill</button>
+  </header>
+
+  <main class="desk">
+    <nav class="steps" id="steps" aria-label="Steps"></nav>
+    <div class="stage" id="stage" aria-live="polite"></div>
+    <aside class="rcol" aria-label="Receipt">
+      <div class="slot" aria-hidden="true"></div>
+      <div class="feed" id="feed"><div id="receipt"></div></div>
+    </aside>
+    <div class="stage stage-after" id="after"></div>
+  </main>
+
+  <div id="overlay"></div>
+  <div class="toast" id="toast" role="status"></div>
+  <input type="file" id="file" accept="image/*" hidden>
+  <input type="file" id="camera" accept="image/*" capture="environment" hidden>
+</body>
+</html>
