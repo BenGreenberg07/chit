@@ -1,5 +1,6 @@
 import { parseReceipt } from "./parse.js";
 import { computeSplit, findIssues } from "./split.js";
+import { Room, newCode, cleanCode } from "./sync.js";
 
 // Pen colors people write with. Red is kept out: it belongs to conflicts.
 const INKS = ["#2447B5", "#1C7A4A", "#B1286B", "#C45F12", "#0E7686", "#7A4A26", "#3C4248", "#6B7418"];
@@ -47,6 +48,24 @@ const blank = () => ({
 });
 
 let S = load();
+
+// ---------- live bills ----------
+// `live` is this phone's membership: { code, me, host }. The bill itself lives
+// in S like any other bill, mirrored to the room as keyed facts.
+const LIVE_KEY = "chit.live";
+let live = (() => { try { return JSON.parse(localStorage.getItem(LIVE_KEY)); } catch { return null; } })();
+const clientId = (() => {
+  try {
+    let id = localStorage.getItem("chit.client");
+    if (!id) localStorage.setItem("chit.client", (id = Math.random().toString(36).slice(2, 12)));
+    return id;
+  } catch { return Math.random().toString(36).slice(2, 12); }
+})();
+let room = null;
+let lastShared = {};
+let lastHostStep = null;
+let joining = null;
+let liveSheet = false;
 let ocr = null;
 let photo = null;
 let printing = false;
@@ -54,6 +73,9 @@ let revealing = false;
 let lastStep = null;
 const shown = new Map();
 const reduced = matchMedia("(prefers-reduced-motion: reduce)");
+const seenMarks = new Set();
+const seenCircles = new Set();
+const flashLines = new Set();
 const touch = matchMedia("(pointer: coarse)");
 
 // ---------- helpers ----------
@@ -113,7 +135,7 @@ function privateClaimer() {
 function activeClaimer() {
   if (S.step !== "claim") return null;
   if (S.claimMode === "private") return S.priv.handoff ? null : privateClaimer();
-  if (!person(S.active)) S.active = S.people[0]?.id ?? null;
+  if (!person(S.active)) S.active = (live && person(live.me) ? live.me : S.people[0]?.id) ?? null;
   return S.active;
 }
 
@@ -212,7 +234,10 @@ function lineHTML(it, { editing, act, flag }) {
   const claimers = S.people.filter((p) => c[p.id] > 0 && (!marksHidden() || p.id === privateClaimer()));
   const marks = claimers.map((p) => {
     const rot = (hash(it.id + p.id) % 9) - 4;
-    return `<span class="mark${revealing ? " stamp" : ""}" style="--ink:${p.ink};--r:${rot}deg">${esc(initials(p))}${c[p.id] > 1 ? `<small>×${c[p.id]}</small>` : ""}</span>`;
+    const mk = it.id + ":" + p.id;
+    const fresh = !seenMarks.has(mk);
+    seenMarks.add(mk);
+    return `<span class="mark${fresh ? " new" : ""}" style="--ink:${p.ink};--r:${rot}deg">${esc(initials(p))}${c[p.id] > 1 ? `<small>×${c[p.id]}</small>` : ""}</span>`;
   }).join("");
   const mine = act && c[act] > 0;
   const inner = `
@@ -230,10 +255,14 @@ function lineHTML(it, { editing, act, flag }) {
         <button data-action="units" data-id="${it.id}" data-d="1" aria-label="One more ${esc(it.name)}" ${c[act] >= it.qty ? "disabled" : ""}>+</button>
       </div>`
     : "";
+  const ck = it.id + ":" + flag?.type;
+  const drawn = seenCircles.has(ck);
+  if (flag) seenCircles.add(ck);
   const circle = flag
-    ? `<svg class="circle" viewBox="0 0 300 44" preserveAspectRatio="none" aria-hidden="true"><path d="M14 30C4 14 52 4 150 4s150 6 146 20c-4 16-90 18-150 17C60 40 8 38 8 22c0-6 8-10 20-13"/></svg>`
+    ? `<svg class="circle${drawn ? " drawn" : ""}" viewBox="0 0 300 44" preserveAspectRatio="none" aria-hidden="true"><path d="M14 30C4 14 52 4 150 4s150 6 146 20c-4 16-90 18-150 17C60 40 8 38 8 22c0-6 8-10 20-13"/></svg>`
     : "";
-  return `<li class="line${mine ? " mine" : ""}${flag ? " flagged" : ""}" style="--ink:${act ? inkOf(act) : "var(--ui)"}">${body}${stepper}${circle}</li>`;
+  const flash = flashLines.has(it.id);
+  return `<li class="line${mine ? " mine" : ""}${flag ? " flagged" : ""}${flash ? " flash" : ""}" style="--ink:${act ? inkOf(act) : "var(--ui)"}">${body}${stepper}${circle}</li>`;
 }
 
 // The stamp should slam once, when the last person pays, not on every render.
@@ -273,6 +302,8 @@ function renderStage() {
       el.classList.remove("enter", "enter-back");
       void el.offsetWidth;
       el.classList.add(dir);
+      clearTimeout(el.enterTimer);
+      el.enterTimer = setTimeout(() => el.classList.remove("enter", "enter-back"), 800);
     }
     lastStep = S.step;
   }
@@ -294,7 +325,7 @@ function stageReceipt() {
       <div class="progress" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${pct}">
         <div class="progress-fill" style="width:${pct}%"></div>
       </div>
-      <p class="progress-label"><span id="ocr-pct">${pct}</span>% read</p>`;
+      <p class="progress-label">${readerReady ? `${pct}% read` : "Getting the reader ready…"}</p>`;
   }
   if (!S.items.length && !S.manual) {
     return `
@@ -316,7 +347,8 @@ function stageReceipt() {
       <div class="alt">
         <button class="btn btn-quiet" data-action="sample">Try a sample receipt</button>
         <button class="btn btn-quiet" data-action="manual">Type it in instead</button>
-      </div>`;
+      </div>
+      <button class="join-cta" data-action="join-open"><span>Someone already scanned it?</span><b>Join their bill with a code</b><span aria-hidden="true">→</span></button>`;
   }
   const sum = S.items.reduce((a, i) => a + i.price, 0);
   const printedTotal = sum + S.tax + S.fees.reduce((a, f) => a + f.amount, 0);
@@ -364,6 +396,14 @@ function stageTable() {
       </li>`).join("")}
     </ul>
     ${S.people.length ? `<p class="hint">Mark whoever put down their card. Everyone else will owe them.</p>` : ""}
+    ${live ? "" : `
+    <section class="invite">
+      <div>
+        <h3>Everyone on their own phone</h3>
+        <p class="hint">Start a live bill and send the link. Friends join with a code, add themselves, and claim what they had. Everyone sees the same receipt update live.</p>
+      </div>
+      <button class="btn" data-action="go-live">Start a live bill</button>
+    </section>`}
     ${next("claim", "Next: claim what you had", {
       disabled: S.people.length < 2,
       note: S.people.length < 2 ? "Add at least two people." : "",
@@ -371,6 +411,7 @@ function stageTable() {
 }
 
 function stageClaim() {
+  if (live) S.claimMode = "together";
   const mode = S.claimMode;
   const open = issues().length;
   const seg = `
@@ -390,10 +431,12 @@ function stageClaim() {
       ? `<button class="btn btn-go" data-action="check-claims">Done claiming<span aria-hidden="true">→</span></button>`
       : toTip(false);
     top = `
-      <p class="hint hint-top">Pick a name, then tap what they had on the receipt. Shared a dish? Everyone who had some taps it.</p>
+      <p class="hint hint-top">${live
+        ? "Claiming for someone without their phone? Pick their name first. Shared a dish? Everyone who had some taps it."
+        : "Pick a name, then tap what they had on the receipt. Shared a dish? Everyone who had some taps it."}</p>
       <div class="dock">
         <div class="dock-chips">${S.people.map((p) => `
-          <button class="chip" style="--ink:${p.ink}" data-action="active" data-id="${p.id}" aria-pressed="${S.active === p.id}">${scribble(p.ink)}${esc(p.name)}</button>`).join("")}
+          <button class="chip" style="--ink:${p.ink}" data-action="active" data-id="${p.id}" aria-pressed="${S.active === p.id}">${scribble(p.ink)}${esc(p.name)}${live?.me === p.id ? " <small>(you)</small>" : ""}</button>`).join("")}
         </div>
         <div class="dock-go">${action}</div>
       </div>`;
@@ -430,7 +473,10 @@ function stageClaim() {
         <button class="btn-link" data-action="priv-restart">Pass the phone around again</button>`;
     }
   }
-  return [`<h2>Who had what?</h2>${seg}<div class="claim-body">${top}</div>`, rest];
+  const lead = live
+    ? `<p class="lede live-lede">${person(live.me) ? `Tap what you had, ${esc(person(live.me).name)}.` : "Tap what you had."} Everyone sees marks as they happen.</p>`
+    : seg;
+  return [`<h2>Who had what?</h2>${lead}<div class="claim-body">${top}</div>`, rest];
 }
 
 function issuesHTML(list, final) {
@@ -510,6 +556,8 @@ function stageTip() {
   const base = t.base === "posttax" ? sp.subtotal + sp.tax : sp.subtotal;
   const effPct = base ? (sp.tipTotal / base) * 100 : 0;
   const presets = [15, 18, 20, 22, 25];
+  const locked = live && live.me !== t.picker;
+  const off = locked ? "disabled" : "";
   return `
     <h2>Tip</h2>
     <p class="lede">One person picks it, so nobody has to negotiate at the table.</p>
@@ -519,29 +567,29 @@ function stageTip() {
     </div>
 
     <section class="tipcard" style="--ink:${picker.ink}">
-      <p class="tip-who"><span class="ink-name">${esc(picker.name)}</span> is picking</p>
+      <p class="tip-who"><span class="ink-name">${esc(picker.name)}</span> is picking${locked ? ". It updates here as they choose." : ""}</p>
       <div class="tip-readout">
         <span class="tip-pct num${S.tip.percent !== lastPct ? " pop" : ""}">${t.mode === "percent" ? t.percent : effPct.toFixed(1)}<small>%</small></span>
         <span class="tip-amt"><span class="num" data-tween="tipamt" data-val="${sp.tipTotal}">${dollars(sp.tipTotal)}</span> on ${dollars(base)}</span>
       </div>
       <div class="presets" role="group" aria-label="Tip percentage">${presets.map((n) => `
-        <button data-action="tip-pct" data-pct="${n}" aria-pressed="${t.mode === "percent" && t.percent === n}">${n}%</button>`).join("")}
+        <button data-action="tip-pct" data-pct="${n}" aria-pressed="${t.mode === "percent" && t.percent === n}" ${off}>${n}%</button>`).join("")}
       </div>
       <div class="custom">
-        <label>Custom %<input class="num" data-key="tip-custom" data-field="tip-percent" inputmode="decimal" value="${t.mode === "percent" && !presets.includes(t.percent) ? t.percent : ""}" placeholder="e.g. 19"></label>
-        <label>Exact amount<input class="num" data-key="tip-amount" data-field="tip-amount" inputmode="decimal" value="${t.mode === "amount" ? money(t.amount) : ""}" placeholder="0.00"></label>
+        <label>Custom %<input class="num" data-key="tip-custom" data-field="tip-percent" inputmode="decimal" ${off} value="${t.mode === "percent" && !presets.includes(t.percent) ? t.percent : ""}" placeholder="e.g. 19"></label>
+        <label>Exact amount<input class="num" data-key="tip-amount" data-field="tip-amount" inputmode="decimal" ${off} value="${t.mode === "amount" ? money(t.amount) : ""}" placeholder="0.00"></label>
       </div>
     </section>
 
     <div class="opts">
       <label class="opt">
-        <input type="checkbox" data-field="tip-base" ${t.base === "pretax" ? "checked" : ""}>
+        <input type="checkbox" data-field="tip-base" ${t.base === "pretax" ? "checked" : ""} ${off}>
         <span><b>Tip on the amount before tax</b><small>Tips on ${dollars(sp.subtotal)} instead of ${dollars(sp.subtotal + sp.tax)}. Common in the US.</small></span>
       </label>
       <div class="opt-row" role="radiogroup" aria-label="How to split the tip">
         <span class="label">Split the tip</span>
-        <button class="pill" role="radio" data-action="tip-split" data-split="proportional" aria-checked="${t.split === "proportional"}">By what each person ordered</button>
-        <button class="pill" role="radio" data-action="tip-split" data-split="even" aria-checked="${t.split === "even"}">Evenly</button>
+        <button class="pill" role="radio" data-action="tip-split" data-split="proportional" aria-checked="${t.split === "proportional"}" ${off}>By what each person ordered</button>
+        <button class="pill" role="radio" data-action="tip-split" data-split="even" aria-checked="${t.split === "even"}" ${off}>Evenly</button>
       </div>
     </div>
     <p class="grand">Bill with tip <span class="num" data-tween="grand" data-val="${sp.grandTotal}">${dollars(sp.grandTotal)}</span></p>
@@ -559,6 +607,10 @@ function stageSettle() {
 
   return `
     <h2 class="settle-head"><span class="ink-name" style="--ink:${payer.ink}">${esc(payer.name)}</span> paid <span class="num" data-tween="grand" data-val="${sp.grandTotal}">${dollars(sp.grandTotal)}</span></h2>
+    ${(() => {
+      const mine = live && live.me !== payer.id && rows.find((r) => r.id === live.me);
+      return mine ? `<p class="you-owe" style="--ink:${payer.ink}">${S.paid.includes(mine.id) ? "You paid" : "You owe"} ${esc(payer.name)} <span class="num" data-tween="you" data-val="${mine.total}">${dollars(mine.total)}</span></p>` : "";
+    })()}
     <p class="lede">${owed && collected === owed
       ? `Everyone's square with ${esc(payer.name)}.`
       : `Here's what everyone owes ${esc(payer.name)}.${collected ? ` ${dollars(collected)} of ${dollars(owed)} collected so far.` : ""}`}</p>
@@ -569,9 +621,9 @@ function stageSettle() {
       const parts = [["Food", r.food], ["Tax", r.tax], ["Fees", r.fees], ["Tip", r.tip], ["Covering", r.cover]]
         .filter(([, v]) => v).map(([k, v]) => `${k} ${money(v)}`).join(" · ");
       return `
-      <li class="iou${paid ? " paid" : ""}${isPayer ? " is-payer" : ""}" style="--ink:${r.p.ink}">
+      <li class="iou${paid ? " paid" : ""}${isPayer ? " is-payer" : ""}${live?.me === r.id ? " is-me" : ""}" style="--ink:${r.p.ink}">
         <div class="iou-top">
-          <span class="iou-name">${esc(r.p.name)}</span>
+          <span class="iou-name">${esc(r.p.name)}${live?.me === r.id ? `<small class="you-tag">you</small>` : ""}</span>
           <span class="iou-amt num" data-tween="iou-${r.id}" data-val="${r.total}">${dollars(r.total)}</span>
         </div>
         <div class="iou-sub">
@@ -607,7 +659,13 @@ function stageSettle() {
 function renderOverlay() {
   const o = $("#overlay");
   const id = privateClaimer();
-  if (S.step === "claim" && id && S.priv.handoff) {
+  renderLivePill();
+  if (joining || liveSheet) {
+    o.innerHTML = joining ? joinSheetHTML() : liveSheetHTML();
+    document.body.classList.add("locked");
+    return;
+  }
+  if (S.step === "claim" && id && S.priv.handoff && !live) {
     const p = person(id);
     o.innerHTML = `
       <div class="handoff" role="dialog" aria-modal="true" aria-labelledby="handoff-name" style="--ink:${p.ink}">
@@ -663,7 +721,9 @@ function render() {
   }
   tween();
   revealing = false;
+  flashLines.clear();
   save();
+  syncOut();
 }
 
 // The async clipboard API only exists on https or localhost. A phone reaching
@@ -693,12 +753,37 @@ function toast(msg) {
 }
 
 // ---------- receipt reading ----------
+// The reader (engine + English model, ~5 MB) starts loading as soon as the app
+// opens, so it's warm by the time someone has framed the photo.
+let reader = null;
+let readerReady = false;
+let readerProgress = null;
+function warmReader() {
+  if (reader || !window.Tesseract) return reader;
+  reader = window.Tesseract.createWorker("eng", 1, { logger: (m) => readerProgress?.(m) })
+    .then((w) => {
+      readerReady = true;
+      return w;
+    })
+    .catch((e) => {
+      reader = null;
+      throw e;
+    });
+  reader.catch(() => {});
+  return reader;
+}
 async function toCanvas(src) {
+  // img.decode() can stall when the browser deprioritizes the tab; the plain
+  // load event always fires.
   const img = new Image();
-  img.src = src;
-  await img.decode();
+  await new Promise((resolve, reject) => {
+    img.onload = resolve;
+    img.onerror = () => reject(new Error("image"));
+    img.src = src;
+  });
   const w = img.naturalWidth;
-  const scale = w < 1600 ? Math.min(2.5, 1600 / w) : Math.min(1, 2200 / w);
+  // ~1500px wide is plenty for receipt text; bigger only makes OCR slower.
+  const scale = w < 1200 ? Math.min(2, 1500 / w) : Math.min(1, 1500 / w);
   const c = document.createElement("canvas");
   c.width = Math.round(w * scale);
   c.height = Math.round(img.naturalHeight * scale);
@@ -725,19 +810,21 @@ async function readReceipt(src, fallback) {
   ocr = { status: "reading", progress: 0 };
   render();
   try {
-    if (!window.Tesseract) throw new Error("reader");
+    const worker = warmReader();
+    if (!worker) throw new Error("reader");
     const canvas = await toCanvas(src);
-    const { data } = await window.Tesseract.recognize(canvas, "eng", {
-      logger: (m) => {
-        if (m.status !== "recognizing text") return;
-        ocr.progress = m.progress;
-        const pct = Math.round(m.progress * 100);
-        const fill = $(".progress-fill");
-        if (fill) fill.style.width = pct + "%";
-        const label = $("#ocr-pct");
-        if (label) label.textContent = pct;
-      },
-    });
+    readerProgress = (m) => {
+      const reading = m.status === "recognizing text";
+      ocr.progress = reading ? m.progress : 0;
+      const pct = Math.round(ocr.progress * 100);
+      const fill = $(".progress-fill");
+      if (fill) fill.style.width = pct + "%";
+      const label = $(".progress-label");
+      if (label) label.textContent = reading ? `${pct}% read` : "Getting the reader ready…";
+    };
+    const w = await worker;
+    const { data } = await w.recognize(canvas);
+    readerProgress = null;
     const r = parseReceipt(data.text);
     if (!r.items.length) throw new Error("empty");
     loadParsed(r);
@@ -746,6 +833,7 @@ async function readReceipt(src, fallback) {
     render();
   } catch (e) {
     ocr = null;
+    readerProgress = null;
     if (fallback) {
       loadParsed(fallback);
       printing = true;
@@ -772,6 +860,254 @@ function readFile(file) {
   readReceipt(URL.createObjectURL(file));
 }
 
+// ---------- live sync ----------
+function saveLive() {
+  try { live ? localStorage.setItem(LIVE_KEY, JSON.stringify(live)) : localStorage.removeItem(LIVE_KEY); } catch {}
+}
+
+function toShared() {
+  const m = {};
+  m.bill = {
+    merchant: S.merchant,
+    items: S.items.map(({ id, name, qty, price }) => ({ id, name, qty, price })),
+    tax: S.tax,
+    fees: S.fees,
+    printed: S.printed || { subtotal: null, total: null },
+    guests: S.guests ?? null,
+  };
+  for (const p of S.people) m["p:" + p.id] = { name: p.name, ink: p.ink, at: p.at || 0 };
+  if (S.payer) m.payer = S.payer;
+  for (const it of S.items) {
+    if (it.shared) m["sh:" + it.id] = true;
+    if (it.restEven) m["re:" + it.id] = true;
+    for (const [pid, u] of Object.entries(S.claims[it.id] || {})) if (u > 0) m[`c:${it.id}:${pid}`] = u;
+  }
+  m.tip = S.tip;
+  if (S.covered.length) m.cov = [...S.covered].sort();
+  for (const pid of S.paid) m["pd:" + pid] = true;
+  if (S.claimChecked) m.checked = true;
+  if (live?.host) m.step = S.step;
+  // A deep copy: S keeps mutating its objects in place, and the last-synced
+  // snapshot must not change along with it or edits would never look new.
+  return JSON.parse(JSON.stringify(m));
+}
+
+function fromShared(d) {
+  const b = d.bill || {};
+  S.merchant = b.merchant || "";
+  S.tax = b.tax || 0;
+  S.fees = b.fees || [];
+  S.printed = b.printed || { subtotal: null, total: null };
+  S.guests = b.guests ?? null;
+  S.items = (b.items || []).map((i) => ({ ...i, shared: !!d["sh:" + i.id], restEven: !!d["re:" + i.id] }));
+  S.people = Object.entries(d)
+    .filter(([k, v]) => k.startsWith("p:") && v)
+    .map(([k, v]) => ({ id: k.slice(2), ...v }))
+    .sort((a, b) => a.at - b.at || (a.id < b.id ? -1 : 1));
+  S.payer = d.payer ?? S.people[0]?.id ?? null;
+  S.claims = {};
+  for (const [k, v] of Object.entries(d)) {
+    if (!k.startsWith("c:")) continue;
+    const [, iid, pid] = k.split(":");
+    (S.claims[iid] ||= {})[pid] = v;
+  }
+  if (d.tip) S.tip = { ...S.tip, ...d.tip };
+  S.covered = d.cov || [];
+  S.paid = Object.keys(d).filter((k) => k.startsWith("pd:")).map((k) => k.slice(3));
+  S.claimChecked = !!d.checked;
+  S.claimMode = "together";
+  if (S.items.length) S.manual = false;
+  // Guests follow the host between steps, but can still look around.
+  if (!live?.host && d.step && d.step !== lastHostStep) {
+    lastHostStep = d.step;
+    if (canVisit(d.step)) S.step = d.step;
+  }
+}
+
+function syncOut() {
+  // A joiner stays quiet until it has the bill, or it would publish a blank one.
+  if (!room || !room.ready) return;
+  const m = toShared();
+  const changes = {};
+  for (const k of Object.keys(m)) if (JSON.stringify(m[k]) !== JSON.stringify(lastShared[k])) changes[k] = m[k];
+  for (const k of Object.keys(lastShared)) if (!(k in m)) changes[k] = null;
+  lastShared = m;
+  if (Object.keys(changes).length) room.set(changes);
+}
+
+function remoteChange(data) {
+  const before = new Set();
+  for (const [iid, c] of Object.entries(S.claims)) for (const [pid, u] of Object.entries(c)) if (u > 0) before.add(iid + ":" + pid);
+  fromShared(data);
+  lastShared = toShared();
+
+  // Point at what just changed on someone else's phone.
+  const added = [];
+  for (const [iid, c] of Object.entries(S.claims)) {
+    for (const [pid, u] of Object.entries(c)) {
+      if (u > 0 && !before.has(iid + ":" + pid) && pid !== live?.me) {
+        added.push([pid, iid]);
+        flashLines.add(iid);
+      }
+    }
+  }
+  if (added.length && !joining) {
+    const who = person(added[0][0]);
+    const item = S.items.find((i) => i.id === added[0][1]);
+    if (who && item) toast(added.length === 1 ? `${who.name} claimed ${item.name}` : `${who.name} claimed ${added.length} lines`);
+  }
+  if (joining && joining.phase === "finding" && S.items.length) joining.phase = "who";
+  render();
+}
+
+function startRoom({ seed }) {
+  room?.close();
+  room = new Room({
+    code: live.code,
+    clientId,
+    onChange: remoteChange,
+    onStatus: () => renderLivePill(),
+  });
+  if (seed) {
+    lastShared = toShared();
+    room.seed(lastShared, seed === "fresh" ? Date.now() : 1);
+  } else {
+    lastShared = {};
+  }
+  room.connect();
+}
+
+function leaveLive() {
+  room?.close();
+  room = null;
+  live = null;
+  liveSheet = false;
+  joining = null;
+  saveLive();
+}
+
+function shareURL() {
+  return `${location.origin}${location.pathname}#join=${live.code}`;
+}
+
+function renderLivePill() {
+  const slot = $("#live-slot");
+  if (!slot) return;
+  if (!live) { slot.innerHTML = ""; return; }
+  const status = room?.status || "connecting";
+  const n = (room?.peerCount() || 0) + 1;
+  slot.innerHTML = `
+    <button class="live-pill ${status}" data-action="live-open" aria-label="Live bill ${live.code}, ${status}">
+      <span class="live-dot" aria-hidden="true"></span>
+      <span class="live-code num">${live.code}</span>
+      <span class="live-n">${status === "live" ? `${n} phone${n === 1 ? "" : "s"}` : status === "connecting" ? "connecting" : "reconnecting"}</span>
+    </button>`;
+}
+
+function liveSheetHTML() {
+  const me = person(live.me);
+  return `
+    <div class="sheet" data-action="sheet-close">
+      <div class="sheet-card" role="dialog" aria-modal="true" aria-labelledby="live-title" data-stop>
+        <span class="sheet-grip" aria-hidden="true"></span>
+        <p class="label" id="live-title">Live bill</p>
+        <p class="code-big num" aria-label="Code ${live.code.split("").join(" ")}">${live.code.split("").map((c) => `<span>${c}</span>`).join("")}</p>
+        <p class="hint">Friends open the link, or go to Chit and tap “Join their bill”, then claim what they had on their own phone.</p>
+        <button class="btn btn-go btn-wide" data-action="share-link">Send the link<span aria-hidden="true">→</span></button>
+        <p class="label sheet-label">This phone belongs to</p>
+        <div class="chips">${S.people.map((p) => `
+          <button class="chip" style="--ink:${p.ink}" data-action="set-me" data-id="${p.id}" aria-pressed="${live.me === p.id}">${scribble(p.ink)}${esc(p.name)}</button>`).join("")}
+        </div>
+        ${me ? "" : `<p class="hint">Pick your name so your taps count as yours.</p>`}
+        <div class="sheet-foot">
+          <button class="btn-link" data-action="leave-live">${live.host ? "Stop sharing on this phone" : "Leave this bill"}</button>
+          <button class="btn btn-quiet" data-action="sheet-close">Done</button>
+        </div>
+      </div>
+    </div>`;
+}
+
+function joinSheetHTML() {
+  const j = joining;
+  let body = "";
+  if (j.phase === "enter") {
+    body = `
+      <h2 class="sheet-title">Join a bill</h2>
+      <p class="hint">Type the code from whoever scanned the receipt.</p>
+      <form class="join-form" data-form="join">
+        <input class="code-input num" name="code" data-key="join-code" value="${esc(j.code || "")}" maxlength="5" autocomplete="off" autocapitalize="characters" spellcheck="false" placeholder="K7QM2" aria-label="Bill code">
+        <button class="btn btn-go btn-wide">Join<span aria-hidden="true">→</span></button>
+      </form>
+      ${j.error ? `<p class="err" role="alert">${esc(j.error)}</p>` : ""}`;
+  } else if (j.phase === "finding") {
+    body = `
+      <h2 class="sheet-title">Finding bill <span class="num">${esc(j.code)}</span></h2>
+      <div class="finding" aria-hidden="true"><i></i><i></i><i></i></div>
+      <p class="hint">Asking the phones already in it for the receipt.</p>`;
+  } else {
+    body = `
+      <h2 class="sheet-title">Which one are you?</h2>
+      <p class="hint">${esc(S.merchant || "The bill")} · ${S.items.length} lines</p>
+      <div class="chips">${S.people.map((p) => `
+        <button class="chip" style="--ink:${p.ink}" data-action="join-as" data-id="${p.id}">${scribble(p.ink)}${esc(p.name)}</button>`).join("")}
+      </div>
+      <form class="add join-add" data-form="join-new">
+        <input name="name" data-key="join-name" placeholder="${S.people.length ? "Not listed? Add your name" : "Your name"}" autocomplete="given-name" maxlength="24" aria-label="Your name">
+        <button class="btn">Add me</button>
+      </form>`;
+  }
+  return `
+    <div class="sheet" data-action="sheet-close">
+      <div class="sheet-card" role="dialog" aria-modal="true" data-stop>
+        <span class="sheet-grip" aria-hidden="true"></span>
+        ${body}
+        <div class="sheet-foot"><button class="btn-link" data-action="join-cancel">Cancel</button></div>
+      </div>
+    </div>`;
+}
+
+function beginJoin(code) {
+  code = cleanCode(code);
+  if (code.length !== 5) {
+    joining = { phase: "enter", code, error: "Codes are 5 characters, like K7QM2." };
+    return;
+  }
+  room?.close();
+  S = blank();
+  shown.clear();
+  seenMarks.clear();
+  seenCircles.clear();
+  lastHostStep = null;
+  live = { code, me: null, host: false };
+  saveLive();
+  joining = { phase: "finding", code };
+  startRoom({ seed: false });
+  clearTimeout(beginJoin.timer);
+  beginJoin.timer = setTimeout(() => {
+    if (joining?.phase !== "finding") return;
+    room?.close();
+    room = null;
+    live = null;
+    saveLive();
+    joining = { phase: "enter", code, error: `No one answered for ${code}. Check the code, and make sure whoever started the bill has Chit open.` };
+    render();
+  }, 12000);
+}
+
+function finishJoin(pid) {
+  live.me = pid;
+  saveLive();
+  S.active = pid;
+  joining = null;
+  if (S.step === "receipt" || S.step === "table") S.step = canVisit("claim") ? "claim" : S.step;
+  toast("You're in. Tap what you had.");
+}
+
+// A phone that slept or lost signal catches up when it comes back.
+document.addEventListener("visibilitychange", () => {
+  if (document.visibilityState === "visible" && room && room.status !== "live") room.connect();
+});
+
 // ---------- actions ----------
 function resetPrivate() {
   S.priv = { started: false, index: 0, handoff: true, done: false, revealed: false };
@@ -784,6 +1120,33 @@ function advancePrivate() {
 }
 
 const actions = {
+  "go-live": () => {
+    live = { code: newCode(), me: S.payer && person(S.payer) ? S.payer : S.people[0]?.id ?? null, host: true };
+    saveLive();
+    startRoom({ seed: "fresh" });
+    liveSheet = true;
+  },
+  "live-open": () => { liveSheet = true; },
+  "sheet-close": (el, e) => {
+    if (e && e.target.closest("[data-stop]") && !e.target.closest('[data-action="sheet-close"]:not(.sheet)')) return false;
+    liveSheet = false;
+    if (joining && joining.phase !== "who") joining = null;
+  },
+  "set-me": (el) => { live.me = el.dataset.id; S.active = live.me; saveLive(); },
+  "leave-live": () => { leaveLive(); toast("This phone left the live bill. Your copy stays here."); },
+  "share-link": () => {
+    const url = shareURL();
+    const text = `Join the bill on Chit. Code ${live.code}`;
+    if (navigator.share) navigator.share({ title: "Chit", text, url }).catch(() => {});
+    else copyText(url).then(() => toast("Link copied. Send it to the table."), () => toast(`Share this code: ${live.code}`));
+    return false;
+  },
+  "join-open": () => { joining = { phase: "enter", code: "" }; requestAnimationFrame(() => $(".code-input")?.focus()); },
+  "join-cancel": () => {
+    if (joining?.phase !== "enter") leaveLive();
+    joining = null;
+  },
+  "join-as": (el) => finishJoin(el.dataset.id),
   goto: (el) => {
     if (!canVisit(el.dataset.step)) return false;
     S.step = el.dataset.step;
@@ -907,6 +1270,7 @@ const actions = {
     }
     el.dataset.confirm = "";
     el.textContent = "New bill";
+    leaveLive();
     S = blank();
     photo = null;
     ocr = null;
@@ -921,7 +1285,7 @@ document.addEventListener("click", (e) => {
   const fn = actions[el.dataset.action];
   if (!fn) return;
   e.preventDefault();
-  if (fn(el) !== false) render();
+  if (fn(el, e) !== false) render();
 });
 
 // Field edits commit on change; Enter or Escape finishes the field.
@@ -971,13 +1335,29 @@ document.addEventListener("change", (e) => {
 
 document.addEventListener("submit", (e) => {
   const form = e.target;
+  if (form.dataset.form === "join") {
+    e.preventDefault();
+    beginJoin(form.elements.code.value);
+    render();
+    return;
+  }
+  if (form.dataset.form === "join-new") {
+    e.preventDefault();
+    const name = form.elements.name.value.trim();
+    if (!name) return;
+    const p = { id: uid(), name, ink: nextInk(), at: Date.now() };
+    S.people.push(p);
+    finishJoin(p.id);
+    render();
+    return;
+  }
   if (form.dataset.form !== "add-person") return;
   e.preventDefault();
   const input = form.elements.name;
   const name = input.value.trim();
   if (!name) return;
   if (S.people.length >= INKS.length) { toast(`Chit handles up to ${INKS.length} people for now.`); return; }
-  const p = { id: uid(), name, ink: nextInk() };
+  const p = { id: uid(), name, ink: nextInk(), at: Date.now() };
   S.people.push(p);
   if (!S.payer) S.payer = p.id;
   resetPrivate();
@@ -1010,8 +1390,15 @@ window.addEventListener("drop", (e) => {
 });
 
 if (!canVisit(S.step)) S.step = "receipt";
+const invite = location.hash.match(/join=([A-Za-z0-9]{4,6})/);
+if (invite) {
+  history.replaceState(null, "", location.pathname);
+  if (cleanCode(invite[1]) !== live?.code) beginJoin(invite[1]);
+}
+if (live && !room) startRoom({ seed: "resume" });
 render();
+window.addEventListener("load", () => setTimeout(warmReader, 600));
 
-if ("serviceWorker" in navigator && location.hostname !== "localhost") {
+if ("serviceWorker" in navigator && !["localhost", "127.0.0.1"].includes(location.hostname)) {
   navigator.serviceWorker.register("sw.js").catch(() => {});
 }

@@ -20,6 +20,12 @@ Receipt reading uses Tesseract.js from a CDN, so the first read needs an interne
 4. **Tip**: one person picks it. Pre-tax or post-tax base, split by what people ordered or evenly.
 5. **Settle**: what everyone owes the payer, to the cent (largest-remainder rounding, so shares always sum exactly). Cover someone's share, mark people paid, copy a summary for the group chat.
 
+## Live bills
+
+On the Table step, tap **Start a live bill**. Chit makes a 5-character code and a link. Friends open the link (or tap "Join their bill with a code"), pick their name, and claim what they had on their own phone. Every phone sees the same receipt update live; the person picking the tip is the only one who can change it, and each phone's Settle screen says what that person owes.
+
+Phones talk through [ntfy.sh](https://ntfy.sh), a free relay with no accounts. Each bill is a map of small facts (who claimed what, the tip, who paid); the newest write per fact wins, and phones already in the bill send a full snapshot to anyone who joins. Anyone who knows a code can read that bill, so treat codes like a group-chat link.
+
 ## Tests
 
     node --test tests/logic.test.mjs
