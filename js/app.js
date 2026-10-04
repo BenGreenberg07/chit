@@ -853,12 +853,20 @@ function copyText(text) {
   });
 }
 
-function toast(msg) {
+function toast(msg, { undo: withUndo = false } = {}) {
   const t = $("#toast");
   t.textContent = msg;
+  t.classList.toggle("has-action", withUndo);
+  if (withUndo) {
+    const b = document.createElement("button");
+    b.className = "toast-undo";
+    b.dataset.action = "undo";
+    b.textContent = "Undo";
+    t.append(b);
+  }
   t.classList.add("on");
   clearTimeout(toast.timer);
-  toast.timer = setTimeout(() => t.classList.remove("on"), 2600);
+  toast.timer = setTimeout(() => t.classList.remove("on", "has-action"), withUndo ? 4500 : 2600);
 }
 
 // ---------- receipt reading ----------
@@ -971,6 +979,83 @@ function readFile(file) {
   readReceipt(URL.createObjectURL(file));
 }
 
+// ---------- theme ----------
+const MOON = `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 14.5A8 8 0 0 1 9.5 4a8 8 0 1 0 10.5 10.5z"/></svg>`;
+const SUN = `<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="4"/><path d="M12 2.5v2M12 19.5v2M2.5 12h2M19.5 12h2M5.3 5.3l1.4 1.4M17.3 17.3l1.4 1.4M5.3 18.7l1.4-1.4M17.3 6.7l1.4-1.4"/></svg>`;
+function applyTheme(theme, animate) {
+  const root = document.documentElement;
+  if (animate && !reduced.matches) {
+    root.classList.add("theming");
+    setTimeout(() => root.classList.remove("theming"), 450);
+  }
+  root.dataset.theme = theme;
+  const dark = theme === "dark";
+  const btn = $("#theme-btn");
+  btn.innerHTML = dark ? SUN : MOON;
+  btn.setAttribute("aria-label", dark ? "Switch to light mode" : "Switch to dark mode");
+  document.querySelector('meta[name="theme-color"]')?.setAttribute("content", dark ? "#121819" : "#d8dfdc");
+}
+// Follow the phone's setting until someone picks one here.
+const systemDark = matchMedia("(prefers-color-scheme: dark)");
+systemDark.addEventListener?.("change", (e) => {
+  let chosen = null;
+  try { chosen = localStorage.getItem("chit.theme"); } catch {}
+  if (!chosen) applyTheme(e.matches ? "dark" : "light", true);
+});
+
+// ---------- undo ----------
+// Undo reverts only the facts an action changed, so in a live bill it never
+// wipes out something a friend did in the meantime.
+const undoStack = [];
+function recordUndo(before, label) {
+  const after = toShared();
+  const inverse = {};
+  for (const k of new Set([...Object.keys(before), ...Object.keys(after)])) {
+    if (JSON.stringify(before[k]) !== JSON.stringify(after[k])) inverse[k] = k in before ? before[k] : undefined;
+  }
+  if (!Object.keys(inverse).length) return;
+  undoStack.push({ inverse, label });
+  if (undoStack.length > 50) undoStack.shift();
+  if (label) toast(label, { undo: true });
+}
+function undo() {
+  const last = undoStack.pop();
+  if (!last) return;
+  const m = toShared();
+  for (const [k, v] of Object.entries(last.inverse)) {
+    if (v === undefined) delete m[k];
+    else m[k] = v;
+  }
+  fromShared(m);
+  render();
+  toast("Undone");
+}
+
+const nameOf = (id) => person(id)?.name || "Someone";
+const itemOf = (id) => S.items.find((i) => i.id === id)?.name || "that line";
+// What each undoable tap did, worded before it happens.
+const UNDO_LABEL = {
+  claim: (el) => {
+    const who = activeClaimer();
+    if (!who) return null;
+    return `${nameOf(who)} ${(S.claims[el.dataset.id] || {})[who] > 0 ? "unclaimed" : "claimed"} ${itemOf(el.dataset.id)}`;
+  },
+  units: (el) => `Changed ${itemOf(el.dataset.id)}`,
+  "del-line": (el) => `Removed ${itemOf(el.dataset.id)}`,
+  "del-fee": () => "Removed a fee",
+  "del-person": (el) => `Removed ${nameOf(el.dataset.id)}`,
+  payer: (el) => `${nameOf(el.dataset.id)} paid the bill`,
+  "fix-everyone": (el) => `${itemOf(el.dataset.id)} split between everyone`,
+  "fix-give": (el) => `${itemOf(el.dataset.id)} given to ${nameOf(el.dataset.pid)}`,
+  "fix-shared": (el) => `${itemOf(el.dataset.id)} marked shared`,
+  portion: (el) => `Changed ${nameOf(activeClaimer())}'s share of ${itemOf(el.dataset.id)}`,
+  "portion-clear": (el) => `${itemOf(el.dataset.id)} split evenly`,
+  "tip-pct": (el) => `Tip set to ${el.dataset.pct}%`,
+  "tip-split": () => "Changed how the tip splits",
+  paid: (el) => `${nameOf(el.dataset.id)} ${S.paid.includes(el.dataset.id) ? "unmarked" : "marked"} paid`,
+  cover: (el) => `${S.covered.includes(el.dataset.id) ? "Stopped covering" : "Covering"} ${nameOf(el.dataset.id)}`,
+};
+
 // ---------- live sync ----------
 function saveLive() {
   try { live ? localStorage.setItem(LIVE_KEY, JSON.stringify(live)) : localStorage.removeItem(LIVE_KEY); } catch {}
@@ -1027,7 +1112,7 @@ function fromShared(d) {
   S.covered = d.cov || [];
   S.paid = Object.keys(d).filter((k) => k.startsWith("pd:")).map((k) => k.slice(3));
   S.claimChecked = !!d.checked;
-  S.claimMode = "together";
+  if (live) S.claimMode = "together";
   if (S.items.length) S.manual = false;
   // Guests follow the host between steps, but can still look around.
   if (!live?.host && d.step && d.step !== lastHostStep) {
@@ -1265,6 +1350,13 @@ function advancePrivate() {
 }
 
 const actions = {
+  theme: () => {
+    const next = document.documentElement.dataset.theme === "dark" ? "light" : "dark";
+    try { localStorage.setItem("chit.theme", next); } catch {}
+    applyTheme(next, true);
+    return false;
+  },
+  undo: () => { undo(); return false; },
   "go-live": () => {
     live = { code: newCode(), me: S.payer && person(S.payer) ? S.payer : S.people[0]?.id ?? null, host: true };
     saveLive();
@@ -1453,12 +1545,22 @@ document.addEventListener("click", (e) => {
   const fn = actions[el.dataset.action];
   if (!fn) return;
   e.preventDefault();
-  if (fn(el, e) !== false) render();
+  const label = UNDO_LABEL[el.dataset.action]?.(el);
+  const before = label ? toShared() : null;
+  if (fn(el, e) !== false) {
+    if (before) recordUndo(before, label);
+    render();
+  }
 });
 
 // Field edits commit on change; Enter or Escape finishes the field.
 document.addEventListener("keydown", (e) => {
   const el = e.target;
+  if ((e.metaKey || e.ctrlKey) && !e.shiftKey && e.key.toLowerCase() === "z" && !el.matches?.("input, textarea")) {
+    e.preventDefault();
+    undo();
+    return;
+  }
   if ((e.key === "Enter" || e.key === "Escape") && el.matches?.("input[data-field]")) {
     e.preventDefault();
     el.blur();
@@ -1469,6 +1571,8 @@ document.addEventListener("change", (e) => {
   const el = e.target;
   const f = el.dataset?.field;
   if (!f) return;
+  const before = toShared();
+  queueMicrotask(() => recordUndo(before, null));
   const id = el.dataset.id;
   const item = S.items.find((i) => i.id === id);
   const fee = S.fees.find((x) => x.id === id);
@@ -1558,6 +1662,7 @@ window.addEventListener("drop", (e) => {
   if (file) { S.step = "receipt"; readFile(file); }
 });
 
+applyTheme(document.documentElement.dataset.theme || "light", false);
 if (!canVisit(S.step)) S.step = "receipt";
 const invite = location.hash.match(/join=([A-Za-z0-9]{4,6})/);
 if (invite) {
