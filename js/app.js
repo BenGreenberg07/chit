@@ -386,27 +386,24 @@ function stageReceipt() {
   const sum = S.items.reduce((a, i) => a + i.price, 0);
   const paidTip = S.tip.fromReceipt ? S.tip.amount : 0;
   const printedTotal = sum + S.tax + S.fees.reduce((a, f) => a + f.amount, 0) + paidTip;
-  const checks = [];
-  if (S.printed.subtotal != null) {
-    checks.push(sum === S.printed.subtotal
-      ? { ok: true, text: `Lines add up to the printed subtotal, ${dollars(sum)}.` }
-      : { ok: false, text: `Lines add up to ${dollars(sum)}, but the receipt's subtotal says ${dollars(S.printed.subtotal)}. A line may be missing or misread.` });
+  // Only problems get a list; when the paper matches the receipt, the lede says so.
+  const problems = [];
+  if (S.printed.subtotal != null && sum !== S.printed.subtotal) {
+    problems.push(`Lines add up to ${dollars(sum)}, but the receipt's subtotal says ${dollars(S.printed.subtotal)}. A line may be missing or misread.`);
   }
-  if (S.printed.total != null) {
-    checks.push(printedTotal === S.printed.total
-      ? { ok: true, text: `${paidTip ? "Tax, fees and tip" : "Tax and fees"} match the printed total, ${dollars(printedTotal)}.` }
-      : { ok: false, text: `With tax${paidTip ? ", fees and tip" : " and fees"} this comes to ${dollars(printedTotal)}; the receipt's total is ${dollars(S.printed.total)}.` });
+  if (S.printed.total != null && printedTotal !== S.printed.total) {
+    problems.push(`With tax${paidTip ? ", fees and tip" : " and fees"} this comes to ${dollars(printedTotal)}; the receipt's total is ${dollars(S.printed.total)}.`);
   }
-  if (paidTip) {
-    checks.push({ ok: true, text: `Already tipped ${dollars(paidTip)} (${tipPctText(split())}). Chit will split that, no need to pick one.` });
-  }
+  const matched = !problems.length && (S.printed.total != null || S.printed.subtotal != null);
+  const lines = `${S.items.length} line${S.items.length === 1 ? "" : "s"}`;
   return `
     <h2>${S.manual && !photo ? "Type in the receipt" : "Check what Chit read"}</h2>
     <p class="lede">${S.manual && !photo
       ? "Fill in each line on the paper. Press Enter to finish a field."
-      : `Found ${S.items.length} line${S.items.length === 1 ? "" : "s"}. Anything wrong? Click it on the paper and fix it.`}</p>
-    ${S.items.length && !paidTip ? `<p class="hint tip-later">No tip on this receipt yet. You'll pick one in step 4.</p>` : ""}
-    ${checks.length ? `<ul class="checks">${checks.map((c) => `<li class="${c.ok ? "ok" : "warn"}">${c.ok ? tick() : bang()}<span>${c.text}</span></li>`).join("")}</ul>` : ""}
+      : matched
+        ? `Found ${lines}, and they match the receipt's ${dollars(S.printed.total ?? sum)} total. Tap anything on the paper to fix it.`
+        : `Found ${lines}. Anything wrong? Tap it on the paper and fix it.`}</p>
+    ${problems.length ? `<ul class="checks">${problems.map((t) => `<li class="warn">${bang()}<span>${t}</span></li>`).join("")}</ul>` : ""}
     ${photo ? `<details class="photo"><summary>Compare with the photo</summary><img src="${photo}" alt="Receipt photo"></details>` : ""}
     ${next("table", "Next: who's at the table", { disabled: !S.items.length })}
     <button class="btn-link" data-action="rescan">Use a different receipt</button>`;
