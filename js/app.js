@@ -116,13 +116,22 @@ function nextInk() {
   return INKS.find((c) => !used.has(c)) ?? INKS[S.people.length % INKS.length];
 }
 
-const split = () => computeSplit({ items: S.items, people: S.people, claims: S.claims, portions: S.portions, tax: S.tax, fees: S.fees, tip: S.tip, covered: S.covered });
+const split = () => computeSplit({ items: S.items, people: S.people, claims: S.claims, portions: S.portions, tax: S.tax, fees: S.fees, tip: S.tip, covered: S.covered, payer: S.payer });
 const issues = () => findIssues(S.items, S.people, S.claims, S.portions);
 
 // Portions people can pick for a shared line, and how they read.
 const FRACTIONS = [[1 / 4, "¼"], [1 / 3, "⅓"], [1 / 2, "½"], [2 / 3, "⅔"], [3 / 4, "¾"]];
 const fracLabel = (f) => (FRACTIONS.find(([v]) => Math.abs(v - f) < 0.01) || [0, `${Math.round(f * 100)}%`])[1];
 let openPortion = null;
+let tipEditing = false;
+
+// "18%" when the tip is a clean percentage of the food, "17.6%" otherwise.
+function tipPctText(sp) {
+  const base = S.tip.base === "posttax" ? sp.subtotal + sp.tax : sp.subtotal;
+  if (!base) return "";
+  const pct = (sp.tipTotal / base) * 100;
+  return Math.abs(pct - Math.round(pct)) < 0.05 ? `${Math.round(pct)}%` : `${pct.toFixed(1)}%`;
+}
 
 function canVisit(id) {
   if (id === "receipt") return true;
@@ -209,11 +218,14 @@ function renderReceipt() {
           : money(S.tax)}</dd></div>
         ${feeRows}
         ${editing ? `<button class="p-add p-add-sm" data-action="add-fee">+ Fee or discount</button>` : ""}
-        <div class="t-row t-strong"><dt>Total</dt><dd>${money(sp.subtotal + sp.tax + sp.feesTotal)}</dd></div>
+        <div class="t-row t-strong"><dt>${S.tip.fromReceipt && !tipEditing ? "Before tip" : "Total"}</dt><dd>${money(sp.subtotal + sp.tax + sp.feesTotal)}</dd></div>
       </dl>
       <dl class="p-sign">
-        <div class="t-row"><dt>Tip${tipShown ? pctLabel : ""}</dt><dd class="blank">${tipShown ? ink("tip", money(sp.tipTotal), picker?.ink) : ""}</dd></div>
-        <div class="t-row"><dt>Total</dt><dd class="blank">${tipShown ? ink("grand", money(sp.grandTotal), picker?.ink) : ""}</dd></div>
+        ${S.tip.fromReceipt && !tipEditing
+          ? `<div class="t-row"><dt>Tip</dt><dd>${money(sp.tipTotal)}</dd></div>
+             <div class="t-row t-strong"><dt>Total</dt><dd>${money(sp.grandTotal)}</dd></div>`
+          : `<div class="t-row"><dt>Tip${tipShown ? pctLabel : ""}</dt><dd class="blank">${tipShown ? ink("tip", money(sp.tipTotal), picker?.ink) : ""}</dd></div>
+             <div class="t-row"><dt>Total</dt><dd class="blank">${tipShown ? ink("grand", money(sp.grandTotal), picker?.ink) : ""}</dd></div>`}
       </dl>
       <p class="p-foot">${S.step === "settle" && picker ? ink("sig", picker.name, picker.ink, "sig") : "Thank you"}</p>
     </article>`;
@@ -372,7 +384,8 @@ function stageReceipt() {
       <button class="join-cta" data-action="join-open"><span>Someone already scanned it?</span><b>Join their bill with a code</b><span aria-hidden="true">→</span></button>`;
   }
   const sum = S.items.reduce((a, i) => a + i.price, 0);
-  const printedTotal = sum + S.tax + S.fees.reduce((a, f) => a + f.amount, 0);
+  const paidTip = S.tip.fromReceipt ? S.tip.amount : 0;
+  const printedTotal = sum + S.tax + S.fees.reduce((a, f) => a + f.amount, 0) + paidTip;
   const checks = [];
   if (S.printed.subtotal != null) {
     checks.push(sum === S.printed.subtotal
@@ -381,14 +394,18 @@ function stageReceipt() {
   }
   if (S.printed.total != null) {
     checks.push(printedTotal === S.printed.total
-      ? { ok: true, text: `Tax and fees match the printed total, ${dollars(printedTotal)}.` }
-      : { ok: false, text: `With tax and fees this comes to ${dollars(printedTotal)}; the receipt's total is ${dollars(S.printed.total)}.` });
+      ? { ok: true, text: `${paidTip ? "Tax, fees and tip" : "Tax and fees"} match the printed total, ${dollars(printedTotal)}.` }
+      : { ok: false, text: `With tax${paidTip ? ", fees and tip" : " and fees"} this comes to ${dollars(printedTotal)}; the receipt's total is ${dollars(S.printed.total)}.` });
+  }
+  if (paidTip) {
+    checks.push({ ok: true, text: `Already tipped ${dollars(paidTip)} (${tipPctText(split())}). Chit will split that, no need to pick one.` });
   }
   return `
     <h2>${S.manual && !photo ? "Type in the receipt" : "Check what Chit read"}</h2>
     <p class="lede">${S.manual && !photo
       ? "Fill in each line on the paper. Press Enter to finish a field."
       : `Found ${S.items.length} line${S.items.length === 1 ? "" : "s"}. Anything wrong? Click it on the paper and fix it.`}</p>
+    ${S.items.length && !paidTip ? `<p class="hint tip-later">No tip on this receipt yet. You'll pick one in step 4.</p>` : ""}
     ${checks.length ? `<ul class="checks">${checks.map((c) => `<li class="${c.ok ? "ok" : "warn"}">${c.ok ? tick() : bang()}<span>${c.text}</span></li>`).join("")}</ul>` : ""}
     ${photo ? `<details class="photo"><summary>Compare with the photo</summary><img src="${photo}" alt="Receipt photo"></details>` : ""}
     ${next("table", "Next: who's at the table", { disabled: !S.items.length })}
@@ -579,8 +596,32 @@ function runningHTML() {
     }).join("")}</ul>`;
 }
 
+function stageTipPaid(sp) {
+  return `
+    <h2>Tip</h2>
+    <section class="tipcard tip-paid">
+      <p class="tip-who">Already on the receipt</p>
+      <div class="tip-readout">
+        <span class="tip-pct num">${dollars(sp.tipTotal)}</span>
+        <span class="tip-amt">${tipPctText(sp)} of ${dollars(sp.subtotal)}</span>
+      </div>
+      <p class="hint">Chit splits this tip; nobody needs to pick one.</p>
+      <button class="btn-link" data-action="tip-change">Change it</button>
+    </section>
+    <div class="opts">
+      <div class="opt-row" role="radiogroup" aria-label="How to split the tip">
+        <span class="label">Split the tip</span>
+        <button class="pill" role="radio" data-action="tip-split" data-split="proportional" aria-checked="${S.tip.split === "proportional"}">By what each person ordered</button>
+        <button class="pill" role="radio" data-action="tip-split" data-split="even" aria-checked="${S.tip.split === "even"}">Evenly</button>
+      </div>
+    </div>
+    <p class="grand">Bill with tip <span class="num" data-tween="grand" data-val="${sp.grandTotal}">${dollars(sp.grandTotal)}</span></p>
+    ${next("settle", "Next: settle up")}`;
+}
+
 let lastPct = null;
 function stageTip() {
+  if (S.tip.fromReceipt && !tipEditing) return stageTipPaid(split());
   queueMicrotask(() => { lastPct = S.tip.percent; });
   const sp = split();
   const t = S.tip;
@@ -834,8 +875,10 @@ function loadParsed(r) {
   S.items = r.items.map((i) => ({ id: uid(), name: i.name, qty: i.qty, price: i.price, shared: false }));
   S.tax = r.tax || 0;
   S.fees = (r.fees || []).map((f) => ({ id: uid(), ...f }));
-  S.printed = { subtotal: r.subtotal ?? null, total: r.total ?? null };
+  S.printed = { subtotal: r.subtotal ?? null, total: r.total ?? null, tip: r.tip ?? null };
+  if (r.tip) S.tip = { ...S.tip, mode: "amount", amount: r.tip, fromReceipt: true };
   S.guests = r.guests ?? null;
+  tipEditing = false;
   shown.clear();
 }
 
@@ -1320,7 +1363,8 @@ const actions = {
   },
   "fix-rest": (el) => { S.items.find((i) => i.id === el.dataset.id).restEven = true; },
   picker: (el) => { S.tip.picker = el.dataset.id; },
-  "tip-pct": (el) => { S.tip.mode = "percent"; S.tip.percent = Number(el.dataset.pct); },
+  "tip-pct": (el) => { S.tip.mode = "percent"; S.tip.percent = Number(el.dataset.pct); S.tip.fromReceipt = false; },
+  "tip-change": () => { tipEditing = true; },
   "tip-split": (el) => { S.tip.split = el.dataset.split; },
   cover: (el) => {
     const id = el.dataset.id;
@@ -1338,7 +1382,7 @@ const actions = {
   copy: () => {
     const sp = split();
     const payer = person(S.payer);
-    const t = S.tip.mode === "percent" ? `${S.tip.percent}% tip` : `${dollars(sp.tipTotal)} tip`;
+    const t = `${dollars(sp.tipTotal)} tip (${tipPctText(sp)})`;
     const lines = [
       `${S.merchant || "Dinner"}: ${dollars(sp.grandTotal)} with ${t}`,
       `${payer.name} paid. Owed to ${payer.name}:`,
@@ -1362,6 +1406,7 @@ const actions = {
     el.dataset.confirm = "";
     el.textContent = "New bill";
     leaveLive();
+    tipEditing = false;
     S = blank();
     photo = null;
     ocr = null;
@@ -1410,13 +1455,14 @@ document.addEventListener("change", (e) => {
     }
     case "tip-percent": {
       const n = Number.parseFloat(el.value);
-      if (Number.isFinite(n) && n >= 0 && n <= 100) { S.tip.mode = "percent"; S.tip.percent = Math.round(n * 10) / 10; }
+      if (Number.isFinite(n) && n >= 0 && n <= 100) { S.tip.mode = "percent"; S.tip.percent = Math.round(n * 10) / 10; S.tip.fromReceipt = false; }
       break;
     }
     case "tip-amount": {
       if (el.value.trim() === "") { S.tip.mode = "percent"; break; }
       S.tip.mode = "amount";
       S.tip.amount = Math.abs(parseMoney(el.value));
+      S.tip.fromReceipt = false;
       break;
     }
     case "tip-base": S.tip.base = el.checked ? "pretax" : "posttax"; break;

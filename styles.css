@@ -524,7 +524,7 @@ body.dragging .drop { transform: scale(1.01); }
 .settle-head .ink-name { font-size: 1.45em; }
 .settle-head .num { font-weight: 500; letter-spacing: -0.05em; }
 .ious { list-style: none; margin: 0; padding: 0; max-width: 620px; border-top: 1.5px solid var(--ui); }
-.iou { position: relative; padding: 16px 0 14px; border-bottom: 1px solid var(--rule); }
+.iou { position: relative; padding: 14px 0 10px; border-bottom: 1px solid var(--rule); }
 .stage.enter .iou { animation: rise 0.4s var(--ease) backwards; }
 .stage.enter .iou:nth-child(2) { animation-delay: 0.05s; }
 .stage.enter .iou:nth-child(3) { animation-delay: 0.1s; }
@@ -533,11 +533,12 @@ body.dragging .drop { transform: scale(1.01); }
 .iou-top { display: flex; justify-content: space-between; align-items: baseline; gap: 16px; }
 .iou-name { font: 400 38px/0.9 var(--f-ink); color: var(--ink); }
 .iou-amt { font-size: 30px; font-weight: 500; }
-.iou-sub { display: flex; justify-content: space-between; align-items: center; gap: 16px; margin-top: 6px; }
+.iou-sub { display: flex; justify-content: space-between; align-items: center; gap: 12px; margin-top: 2px; }
+.iou-sub .btn-sm { padding: 5px 11px; font-size: 13px; border-radius: 6px; }
 .iou-parts { font: 400 12.5px/1.4 var(--f-mono); color: var(--muted); }
-.iou-tag { font-size: 13px; font-weight: 700; color: var(--muted); }
+.iou-tag { font-size: 13px; font-weight: 700; color: var(--muted); white-space: nowrap; }
 .is-payer .iou-amt { color: var(--muted); }
-.iou details { margin-top: 8px; font-size: 14px; }
+.iou details { margin-top: 4px; font-size: 14px; }
 .iou summary { cursor: pointer; color: var(--muted); width: fit-content; }
 .iou summary:hover { color: var(--ui); }
 .iou details ul { list-style: none; margin: 8px 0 2px; padding: 10px 14px; background: var(--paper); border-radius: 6px; font: 13px/1.7 var(--f-mono); }
@@ -623,6 +624,11 @@ body.dragging .drop { transform: scale(1.01); }
 .qr-caption { margin: 0; font-size: 13.5px; color: var(--muted); }
 .code-small { margin: 12px 0 0; text-align: center; font-size: 13.5px; color: var(--muted); }
 .code-small .num { color: var(--ui); font-weight: 600; letter-spacing: 0.14em; }
+
+.tip-later { margin: -12px 0 18px; }
+.tip-paid .tip-pct { font-size: 56px; }
+.tip-paid .hint { margin: 0; }
+.tip-paid .btn-link { margin-top: 10px; }
 
 /* ---------- live bills ---------- */
 /* A line someone else just claimed glows in their ink for a moment. */
@@ -809,9 +815,8 @@ body.dragging .drop { transform: scale(1.01); }
   .drop { padding: 26px 22px; }
   .add input { font-size: 16px; }
   .custom input { font-size: 16px; }
-  .iou-name { font-size: 34px; }
+  .iou-name { font-size: 31px; }
   .iou-amt { font-size: 26px; }
-  .iou-sub { align-items: flex-end; }
   .handoff .btn-big { width: min(100%, 360px); }
   .sheet { align-items: end; padding: 0; }
   .sheet-card { width: 100%; max-height: 92dvh; border-radius: 20px 20px 0 0; padding: 14px 20px calc(18px + env(safe-area-inset-bottom)); animation-name: sheet-up-phone; }

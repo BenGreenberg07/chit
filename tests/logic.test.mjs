@@ -89,3 +89,63 @@ test("portions flow through the split and get flagged when they don't fit", () =
   assert.equal(findIssues(pizza, people, claims, { p: { a: 0.75, b: 0.5 } })[0].type, "share-over");
   assert.equal(findIssues(pizza, people, claims, { p: { a: 0.25, b: 0.25 } })[0].type, "share-under");
 });
+
+test("people who ordered the same thing pay within a cent, and the payer absorbs ties", () => {
+  const six = ["anna", "emily", "mateo", "brandon", "idania", "ben"].map((id) => ({ id }));
+  const items = [
+    { id: "m", name: "Margherita", qty: 2, price: 5400 },
+    { id: "s", name: "Sophia Loren", qty: 1, price: 2800 },
+    { id: "c", name: "Panzanella", qty: 1, price: 1400 },
+  ];
+  // Margherita and salad split by all six; Sophia Loren shared by three.
+  const all = Object.fromEntries(six.map((p) => [p.id, 1]));
+  const claims = { m: all, c: all, s: { mateo: 1, brandon: 1, ben: 1 } };
+  const items2 = items.map((i) => ({ ...i, shared: true }));
+  const r = computeSplit({
+    items: items2, people: six, claims, tax: 793, fees: [{ amount: 311 }],
+    tip: { mode: "amount", amount: 1728, split: "proportional" }, payer: "ben",
+  });
+  const t = Object.fromEntries(r.rows.map((x) => [x.id, x.total]));
+  assert.equal(sum(r.rows.map((x) => x.total)), 12432);
+  assert.ok(Math.abs(t.mateo - t.ben) <= 1 && Math.abs(t.brandon - t.ben) <= 1);
+  assert.ok(Math.abs(t.anna - t.emily) <= 1);
+  assert.ok(t.ben >= t.mateo && t.ben >= t.brandon);
+  r.rows.forEach((x) => assert.equal(x.food + x.tax + x.fees + x.tip + x.cover, x.total));
+});
+
+test("parser reads a paid receipt: fee, printed tip, and the name beside the phone", () => {
+  const r = parseReceipt(`Date: 10/3/26          Time: 6:42 pm
+Pizzata                 215-546-7200
+To Go                          #525
+Customer Name:                Ben G
+2 Size Queen Margherita      $54.00
+Size Sophia Loren Pizza      $28.00
+Ciao Panzanella Salad        $14.00
+Subtotal                     $96.00
+Tax                           $7.93
+Transaction Processing Fee    $3.11
+Tip                          $17.28
+Total                       $124.32
+CREDIT CARD           AUTHORIZATION
+ENTRY                          CHIP
+VISA #6115                  $124.32`);
+  assert.equal(r.merchant, "Pizzata");
+  assert.deepEqual(r.items.map((i) => [i.qty, i.price]), [[2, 5400], [1, 2800], [1, 1400]]);
+  assert.equal(r.subtotal, 9600);
+  assert.equal(r.tax, 793);
+  assert.deepEqual(r.fees.map((f) => f.amount), [311]);
+  assert.equal(r.tip, 1728);
+  assert.equal(r.total, 12432);
+});
+
+test("suggested-tip lines are not a paid tip", () => {
+  const r = parseReceipt(`Noodle Bar
+Dumplings 10.00
+Subtotal 10.00
+Suggested tip
+18% 1.80
+20% 2.00
+Total 10.00`);
+  assert.equal(r.tip, null);
+  assert.equal(r.items.length, 1);
+});

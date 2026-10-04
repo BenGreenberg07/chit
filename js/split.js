@@ -2,17 +2,21 @@
 // up exactly; fractional shares are rounded once per component with the
 // largest-remainder method.
 
-export function allocate(total, weights) {
-  if (total < 0) return allocate(-total, weights).map((c) => -c);
+// `first` breaks ties: when two people's fractions are equal, the leftover
+// penny goes to that index (the person who paid) before anyone else.
+export function allocate(total, weights, first = -1) {
+  if (total < 0) return allocate(-total, weights, first).map((c) => -c);
   const sum = weights.reduce((a, b) => a + b, 0);
   if (!total || sum <= 0) return weights.map(() => 0);
   const raw = weights.map((w) => (total * w) / sum);
   const out = raw.map(Math.floor);
   let rem = total - out.reduce((a, b) => a + b, 0);
+  // Remainders are compared at a fixed precision so float noise never decides
+  // who gets a penny between two people who ordered the same thing.
   const order = raw
-    .map((r, i) => [r - out[i], i])
+    .map((r, i) => [Math.round((r - out[i]) * 1e6), i])
     .filter(([, i]) => weights[i] > 0)
-    .sort((a, b) => b[0] - a[0] || a[1] - b[1]);
+    .sort((a, b) => b[0] - a[0] || (b[1] === first) - (a[1] === first) || a[1] - b[1]);
   for (let k = 0; rem > 0; k++, rem--) out[order[k % order.length][1]]++;
   return out;
 }
@@ -75,7 +79,7 @@ export function findIssues(items, people, claims, portions = {}) {
   return issues;
 }
 
-export function computeSplit({ items, people, claims, portions = {}, tax = 0, fees = [], tip, covered = [] }) {
+export function computeSplit({ items, people, claims, portions = {}, tax = 0, fees = [], tip, covered = [], payer = null }) {
   const n = people.length;
   const subtotal = items.reduce((a, it) => a + it.price, 0);
 
@@ -116,21 +120,34 @@ export function computeSplit({ items, people, claims, portions = {}, tax = 0, fe
   const feesTotal = fees.reduce((a, f) => a + f.amount, 0);
   const tipCents = tipTotal(tip, subtotal, tax);
 
-  const foodC = allocate(subtotal, food);
-  const taxC = allocate(tax, byFood);
-  const feesC = allocate(feesTotal, byFood);
-  const tipC = allocate(tipCents, tip.split === "even" ? people.map(() => 1) : byFood);
+  // Each person's exact (fractional) share of every part of the bill.
+  const share = (amount, weights) => {
+    const sum = weights.reduce((a, b) => a + b, 0);
+    return weights.map((w) => (sum > 0 ? (amount * w) / sum : 0));
+  };
+  const tipWeights = tip.split === "even" ? people.map(() => 1) : byFood;
+  const exact = people.map((_, i) =>
+    food[i] + share(tax, byFood)[i] + share(feesTotal, byFood)[i] + share(tipCents, tipWeights)[i]);
 
-  const rows = people.map((p, i) => ({
-    id: p.id,
-    food: foodC[i],
-    tax: taxC[i],
-    fees: feesC[i],
-    tip: tipC[i],
-    cover: 0,
-    items: itemShares[i],
-  }));
-  rows.forEach((r) => (r.total = r.food + r.tax + r.fees + r.tip));
+  // Round each person's total once. Rounding food, tax and tip separately
+  // let the same person collect several stray pennies; now people who ordered
+  // the same thing differ by at most a cent, and the payer absorbs ties.
+  const payerIdx = people.findIndex((p) => p.id === payer);
+  const grand = subtotal + tax + feesTotal + tipCents;
+  const totals = allocate(grand, exact, payerIdx);
+
+  const foodC = allocate(subtotal, food, payerIdx);
+  const taxC = allocate(tax, byFood, payerIdx);
+  const feesC = allocate(feesTotal, byFood, payerIdx);
+  const rows = people.map((p, i) => {
+    // The breakdown is for reading; whatever cent the single rounding moved
+    // lands on the tip (or tax) so the parts still add up to the total.
+    const r = { id: p.id, food: foodC[i], tax: taxC[i], fees: feesC[i], tip: 0, cover: 0, items: itemShares[i], total: totals[i] };
+    const rest = totals[i] - r.food - r.tax - r.fees;
+    if (tipCents) r.tip = rest;
+    else r.tax += rest;
+    return r;
+  });
 
   // Treating someone: their whole share moves onto everyone else in
   // proportion to what each of them already owes.
