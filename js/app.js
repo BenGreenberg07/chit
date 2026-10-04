@@ -77,6 +77,7 @@ const reduced = matchMedia("(prefers-reduced-motion: reduce)");
 const seenMarks = new Set();
 const seenCircles = new Set();
 const flashLines = new Set();
+const seenUnderlines = new Set();
 const touch = matchMedia("(pointer: coarse)");
 
 // ---------- helpers ----------
@@ -302,8 +303,17 @@ function lineHTML(it, { editing, act, flag }) {
   const circle = flag
     ? `<svg class="circle${drawn ? " drawn" : ""}" viewBox="0 0 300 44" preserveAspectRatio="none" aria-hidden="true"><path d="M14 30C4 14 52 4 150 4s150 6 146 20c-4 16-90 18-150 17C60 40 8 38 8 22c0-6 8-10 20-13"/></svg>`
     : "";
+  // Your claimed lines get a pen stroke in your ink, drawn once when you tap.
+  let underline = "";
+  if (mine) {
+    const uk = it.id + ":" + act;
+    const fresh = !seenUnderlines.has(uk);
+    seenUnderlines.add(uk);
+    const wob = (hash(uk) % 5) - 2;
+    underline = `<svg class="pen-line${fresh ? " draw" : ""}" viewBox="0 0 200 8" preserveAspectRatio="none" aria-hidden="true"><path d="M2 ${5 + wob * 0.3}C40 ${3 - wob * 0.4} 90 ${6 + wob * 0.2} 130 ${4 + wob * 0.3}S185 ${3 - wob * 0.2} 198 ${5 + wob * 0.3}"/></svg>`;
+  }
   const flash = flashLines.has(it.id);
-  return `<li class="line${mine ? " mine" : ""}${flag ? " flagged" : ""}${flash ? " flash" : ""}" style="--ink:${act ? inkOf(act) : "var(--ui)"}">${body}${stepper}${portionRow}${circle}</li>`;
+  return `<li class="line${mine ? " mine" : ""}${flag ? " flagged" : ""}${flash ? " flash" : ""}" style="--ink:${act ? inkOf(act) : "var(--ui)"}">${body}${underline}${stepper}${portionRow}${circle}</li>`;
 }
 
 // The stamp should slam once, when the last person pays, not on every render.
@@ -853,20 +863,12 @@ function copyText(text) {
   });
 }
 
-function toast(msg, { undo: withUndo = false } = {}) {
+function toast(msg) {
   const t = $("#toast");
   t.textContent = msg;
-  t.classList.toggle("has-action", withUndo);
-  if (withUndo) {
-    const b = document.createElement("button");
-    b.className = "toast-undo";
-    b.dataset.action = "undo";
-    b.textContent = "Undo";
-    t.append(b);
-  }
   t.classList.add("on");
   clearTimeout(toast.timer);
-  toast.timer = setTimeout(() => t.classList.remove("on", "has-action"), withUndo ? 4500 : 2600);
+  toast.timer = setTimeout(() => t.classList.remove("on"), 2600);
 }
 
 // ---------- receipt reading ----------
@@ -991,8 +993,7 @@ function applyTheme(theme, animate) {
   if (document.startViewTransition) {
     // If the page is hidden the browser skips the fade but still runs set().
     const vt = document.startViewTransition(set);
-    vt.ready.catch(() => {});
-    vt.finished.catch(() => {});
+    for (const p of [vt.ready, vt.finished, vt.updateCallbackDone]) p?.catch(() => {});
     return;
   }
   root.classList.add("theming");
@@ -1033,7 +1034,6 @@ function recordUndo(before, label) {
   if (!Object.keys(inverse).length) return;
   undoStack.push({ inverse, label });
   if (undoStack.length > 50) undoStack.shift();
-  if (label) toast(label, { undo: true });
 }
 function undo() {
   const last = undoStack.pop();
@@ -1045,7 +1045,6 @@ function undo() {
   }
   fromShared(m);
   render();
-  toast("Undone");
 }
 
 const nameOf = (id) => person(id)?.name || "Someone";
@@ -1373,7 +1372,6 @@ const actions = {
     applyTheme(next, true);
     return false;
   },
-  undo: () => { undo(); return false; },
   "go-live": () => {
     live = { code: newCode(), me: S.payer && person(S.payer) ? S.payer : S.people[0]?.id ?? null, host: true };
     saveLive();

@@ -83,14 +83,7 @@
 .icon-btn svg.swap { animation: icon-swap 0.5s cubic-bezier(0.3, 1.3, 0.5, 1); }
 @keyframes icon-swap { from { opacity: 0; transform: rotate(-90deg) scale(0.4); } }
 
-/* Undo in the toast */
 .toast { width: max-content; }
-.toast.has-action { pointer-events: auto; display: flex; align-items: center; gap: 14px; padding-right: 8px; }
-.toast-undo {
-  padding: 6px 12px; border: 0; border-radius: 6px;
-  background: color-mix(in srgb, var(--on-solid) 16%, transparent); color: var(--on-solid);
-  font-weight: 700; font-size: 14px;
-}
 
 *, *::before, *::after { box-sizing: border-box; }
 html { -webkit-text-size-adjust: 100%; -webkit-tap-highlight-color: transparent; }
@@ -237,7 +230,18 @@ button { cursor: pointer; }
 }
 button.l-hit { transition: background-color 0.15s; }
 button.l-hit:hover { background: color-mix(in srgb, var(--ink) 7%, transparent); }
-.line.mine button.l-hit { background: color-mix(in srgb, var(--ink) 10%, transparent); }
+/* A claimed line is underlined in pen, not boxed. */
+.pen-line {
+  position: absolute; left: calc(2.2ch + 6px); top: 23px;
+  width: calc(100% - 2.2ch - 6px); height: 8px;
+  overflow: visible; pointer-events: none;
+}
+.pen-line path {
+  fill: none; stroke: var(--ink); stroke-width: 2.2; stroke-linecap: round;
+  vector-effect: non-scaling-stroke; opacity: 0.85;
+}
+.pen-line.draw path { stroke-dasharray: 400; stroke-dashoffset: 400; animation: pen-draw 0.42s cubic-bezier(0.6, 0, 0.3, 1) forwards; }
+@keyframes pen-draw { to { stroke-dashoffset: 0; } }
 .l-qty { color: var(--print-soft); }
 .l-name { overflow-wrap: anywhere; }
 .l-price { text-align: right; font-variant-numeric: tabular-nums; }
@@ -833,7 +837,6 @@ body.dragging .drop { transform: scale(1.01); }
   .p-name { font-size: 30px !important; }
   .feed { max-height: none; }
   button.l-hit:hover { background: none; }
-  .line.mine button.l-hit:hover { background: color-mix(in srgb, var(--ink) 10%, transparent); }
   .bar { padding: calc(12px + env(safe-area-inset-top)) 16px 0; }
   .wordmark { font-size: 26px; }
   .bar-merchant { display: none; }
@@ -866,6 +869,7 @@ body.dragging .drop { transform: scale(1.01); }
   /* Claim controls ride along at the bottom while you scroll the receipt. */
   body[data-step="claim"] { padding-bottom: 170px; }
   body[data-step="claim"] .toast { bottom: calc(160px + env(safe-area-inset-bottom)); }
+  .pen-line { top: 29px; }
 
   .claim-body .dock {
     position: fixed;
