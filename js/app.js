@@ -984,10 +984,26 @@ const MOON = `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 14.5A8 8 
 const SUN = `<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="4"/><path d="M12 2.5v2M12 19.5v2M2.5 12h2M19.5 12h2M5.3 5.3l1.4 1.4M17.3 17.3l1.4 1.4M5.3 18.7l1.4-1.4M17.3 6.7l1.4-1.4"/></svg>`;
 function applyTheme(theme, animate) {
   const root = document.documentElement;
-  if (animate && !reduced.matches) {
-    root.classList.add("theming");
-    setTimeout(() => root.classList.remove("theming"), 450);
+  const set = () => setTheme(theme, animate);
+  if (!animate || reduced.matches) return set();
+  // Cross-fade the whole screen as one picture so every piece of text fades
+  // together; per-element color transitions snap on inherited text in Safari.
+  if (document.startViewTransition) {
+    // If the page is hidden the browser skips the fade but still runs set().
+    const vt = document.startViewTransition(set);
+    vt.ready.catch(() => {});
+    vt.finished.catch(() => {});
+    return;
   }
+  root.classList.add("theming");
+  requestAnimationFrame(() => requestAnimationFrame(() => {
+    set();
+    setTimeout(() => root.classList.remove("theming"), 450);
+  }));
+}
+
+function setTheme(theme, animate) {
+  const root = document.documentElement;
   root.dataset.theme = theme;
   const dark = theme === "dark";
   const btn = $("#theme-btn");

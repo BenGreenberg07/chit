@@ -63,7 +63,9 @@
 :root[data-theme="dark"] .sheet { background: rgba(0, 0, 0, 0.55); }
 :root[data-theme="dark"] .btn-go, :root[data-theme="dark"] .shoot { color: #fff; }
 :root[data-theme="dark"] .issue { border-color: color-mix(in srgb, var(--red) 70%, transparent); }
-/* Switching themes cross-fades instead of flashing. */
+/* Switching themes cross-fades the whole screen at once. */
+::view-transition-old(root), ::view-transition-new(root) { animation-duration: 0.45s; animation-timing-function: ease; }
+/* Fallback for browsers without view transitions. */
 :root.theming, :root.theming * { transition: background-color 0.35s ease, color 0.35s ease, border-color 0.35s ease, fill 0.35s ease, stroke 0.35s ease !important; }
 
 /* Theme toggle and New bill read as one pair: same height, corners, border. */
