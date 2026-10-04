@@ -20,7 +20,14 @@ export function cleanCode(raw) {
   return String(raw || "").toUpperCase().replace(/[^A-Z0-9]/g, "").replace(/[IL]/g, "1").replace(/O/g, "0").slice(0, 5);
 }
 
-const newer = (a, b) => !b || a.ts > b.ts || (a.ts === b.ts && a.by > b.by);
+// Newest write wins. Exact ties (same time, same phone) fall back to comparing
+// the values themselves, so every phone picks the same winner in any order.
+const newer = (a, b) => {
+  if (!b) return true;
+  if (a.ts !== b.ts) return a.ts > b.ts;
+  if (a.by !== b.by) return a.by > b.by;
+  return JSON.stringify(a.v ?? null) > JSON.stringify(b.v ?? null);
+};
 
 async function pack(obj) {
   const json = JSON.stringify(obj);
@@ -54,6 +61,7 @@ export class Room {
     this.status = "connecting";
     this.closed = false;
     this.ready = false;
+    this.maxTs = 0;
   }
 
   // Seed with what this phone already has. A phone resuming after a reload
@@ -62,7 +70,7 @@ export class Room {
     this.ready = true;
     for (const [k, v] of Object.entries(map)) {
       this.data[k] = v;
-      this.meta[k] = { ts, by: this.clientId };
+      this.meta[k] = { ts, by: this.clientId, v };
     }
   }
 
@@ -126,8 +134,9 @@ export class Room {
     if (msg.t === "ops" || msg.t === "snap") {
       let changed = false;
       for (const [k, v, ts, by] of msg.ops) {
-        if (newer({ ts, by }, this.meta[k])) {
-          this.meta[k] = { ts, by };
+        this.maxTs = Math.max(this.maxTs, ts);
+        if (newer({ ts, by, v }, this.meta[k])) {
+          this.meta[k] = { ts, by, v };
           if (v === null) delete this.data[k];
           else this.data[k] = v;
           changed = true;
@@ -142,9 +151,11 @@ export class Room {
 
   // Record local changes and send them, batched.
   set(changes) {
-    const ts = Date.now();
+    // Never stamp a change older than something already seen: a phone whose
+    // clock runs behind would otherwise lose its own newer edits.
+    const ts = (this.maxTs = Math.max(Date.now(), this.maxTs + 1));
     for (const [k, v] of Object.entries(changes)) {
-      this.meta[k] = { ts, by: this.clientId };
+      this.meta[k] = { ts, by: this.clientId, v };
       if (v === null) delete this.data[k];
       else this.data[k] = v;
       this.pending.set(k, [k, v, ts, this.clientId]);

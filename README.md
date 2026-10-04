@@ -28,4 +28,4 @@ Phones talk through [ntfy.sh](https://ntfy.sh), a free relay with no accounts. E
 
 ## Tests
 
-    node --test tests/logic.test.mjs
+    node --test tests/logic.test.mjs tests/stress.test.mjs

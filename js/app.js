@@ -84,7 +84,7 @@ const $ = (s, r = document) => r.querySelector(s);
 const uid = () => Math.random().toString(36).slice(2, 9);
 const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]);
 const money = (c) => (c < 0 ? "-" : "") + (Math.abs(c) / 100).toFixed(2);
-const dollars = (c) => (c < 0 ? "−$" : "$") + (Math.abs(c) / 100).toFixed(2);
+const dollars = (c) => (c < 0 ? "−$" : "$") + (Math.abs(c) / 100).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 const person = (id) => S.people.find((p) => p.id === id);
 const inkOf = (id) => person(id)?.ink ?? "var(--ui)";
 const parseMoney = (v) => {
@@ -208,7 +208,7 @@ function renderReceipt() {
         <p class="p-meta">${S.items.length} line${S.items.length === 1 ? "" : "s"}${S.guests ? ` · ${S.guests} guests` : ""}</p>
       </header>
       <hr class="p-rule">
-      <ol class="p-lines">${S.items.map((it) => lineHTML(it, { editing, act, flag: flagged.get(it.id) })).join("")}</ol>
+      <ol class="p-lines">${S.items.map((it, i) => withIndex(lineHTML(it, { editing, act, flag: flagged.get(it.id) }), i)).join("")}</ol>
       ${editing ? `<button class="p-add" data-action="add-line">+ Add a line</button>` : ""}
       <hr class="p-rule">
       <dl class="p-totals">
@@ -230,6 +230,14 @@ function renderReceipt() {
       <p class="p-foot">${S.step === "settle" && picker ? ink("sig", picker.name, picker.ink, "sig") : "Thank you"}</p>
     </article>`;
   printing = false;
+}
+
+// Gives a receipt line its position (for the print-in stagger), merging into
+// the line's existing style attribute when it has one.
+function withIndex(html, i) {
+  const tag = html.match(/<li\b[^>]*>/)[0];
+  const next = tag.includes(' style="') ? tag.replace(' style="', ` style="--i:${i};`) : tag.replace("<li", `<li style="--i:${i}"`);
+  return html.replace(tag, next);
 }
 
 // Handwriting. Animates only when the written value changes.
@@ -307,15 +315,30 @@ function justSettled() {
 }
 
 // ---------- stage ----------
+// The tabs are built once and updated in place, so the underline can glide
+// from one step to the next instead of jumping.
 function renderSteps() {
+  const nav = $("#steps");
+  if (!nav.querySelector("ol")) {
+    nav.innerHTML = `<ol>${STEPS.map((s, i) => `
+      <li><button data-action="goto" data-step="${s.id}"><span class="step-n">${i + 1}</span>${s.label}</button></li>`).join("")}
+      <span class="step-ink" aria-hidden="true"></span></ol>`;
+  }
   const at = STEPS.findIndex((s) => s.id === S.step);
-  $("#steps").innerHTML = `<ol>${STEPS.map((s, i) => `
-    <li><button data-action="goto" data-step="${s.id}" ${canVisit(s.id) ? "" : "disabled"}
-      ${s.id === S.step ? 'aria-current="step"' : ""} class="${i < at ? "done" : ""}">
-      <span class="step-n">${i + 1}</span>${s.label}</button></li>`).join("")}</ol>`;
-  const cur = $("#steps [aria-current]");
-  const ol = $("#steps ol");
-  if (cur && ol.scrollWidth > ol.clientWidth) ol.scrollLeft = cur.offsetLeft - ol.clientWidth / 2 + cur.offsetWidth / 2;
+  nav.querySelectorAll("button[data-step]").forEach((b, i) => {
+    b.disabled = !canVisit(b.dataset.step);
+    b.classList.toggle("done", i < at);
+    if (i === at) b.setAttribute("aria-current", "step");
+    else b.removeAttribute("aria-current");
+  });
+  const cur = nav.querySelector("[aria-current]");
+  const ol = nav.querySelector("ol");
+  const ink = nav.querySelector(".step-ink");
+  if (cur) {
+    ink.style.transform = `translateX(${cur.offsetLeft}px)`;
+    ink.style.width = cur.offsetWidth + "px";
+    if (ol.scrollWidth > ol.clientWidth) ol.scrollTo({ left: cur.offsetLeft - ol.clientWidth / 2 + cur.offsetWidth / 2, behavior: reduced.matches ? "auto" : "smooth" });
+  }
 }
 
 function renderStage() {
@@ -686,12 +709,14 @@ function stageSettle() {
       <li class="iou${paid ? " paid" : ""}${isPayer ? " is-payer" : ""}${live?.me === r.id ? " is-me" : ""}" style="--ink:${r.p.ink}">
         <div class="iou-top">
           <span class="iou-name">${esc(r.p.name)}${live?.me === r.id ? `<small class="you-tag">you</small>` : ""}</span>
-          <span class="iou-amt num" data-tween="iou-${r.id}" data-val="${r.total}">${dollars(r.total)}</span>
+          <span class="iou-amt num" data-tween="iou-${r.id}" data-val="${r.total}" data-count-up>${dollars(r.total)}</span>
         </div>
         <div class="iou-sub">
           <span class="iou-parts">${S.covered.includes(r.id) ? "On the house tonight" : parts || "Nothing claimed"}</span>
           ${isPayer
             ? `<span class="iou-tag">Paid the bill</span>`
+            : r.total <= 0
+            ? `<span class="iou-tag">Owes nothing</span>`
             : `<button class="btn btn-sm ${paid ? "btn-quiet" : ""}" data-action="paid" data-id="${r.id}" aria-pressed="${paid}">${paid ? "Paid" : "Mark paid"}</button>`}
         </div>
         ${r.items.length ? `<details><summary>What ${esc(r.p.name)} had</summary><ul>${r.items.map((i) => {
@@ -750,24 +775,41 @@ function renderOverlay() {
   }
 }
 
-// Count money up or down to its new value instead of snapping.
+// Count money up or down to its new value instead of snapping. Animations
+// live by key, not element, so a re-render mid-count picks up where it was.
 const tweened = new Map();
+const anims = new Map();
 function tween() {
+  const now = performance.now();
   document.querySelectorAll("[data-tween]").forEach((el) => {
     const key = el.dataset.tween;
     const to = Number(el.dataset.val);
-    const from = tweened.get(key);
+    const live = anims.get(key);
+    const running = live && now - live.t0 < live.dur;
+    if (running && live.to === to) return runTween(el, live);
+    let from = tweened.get(key);
     tweened.set(key, to);
+    if (from == null && el.hasAttribute("data-count-up")) from = 0;
     if (from == null || from === to || reduced.matches) return;
-    const t0 = performance.now();
-    const step = (now) => {
-      const k = Math.min(1, (now - t0) / 420);
-      const e = 1 - Math.pow(1 - k, 3);
-      el.textContent = dollars(Math.round(from + (to - from) * e));
-      if (k < 1 && el.isConnected) requestAnimationFrame(step);
-    };
-    requestAnimationFrame(step);
+    if (running) from = tweenValue(live, now);
+    const a = { from, to, t0: now, dur: from === 0 ? 900 : 420 };
+    anims.set(key, a);
+    runTween(el, a);
   });
+}
+function tweenValue(a, now) {
+  const k = Math.min(1, (now - a.t0) / a.dur);
+  return Math.round(a.from + (a.to - a.from) * (1 - Math.pow(1 - k, 3)));
+}
+function runTween(el, a) {
+  const step = (now) => {
+    el.textContent = dollars(tweenValue(a, now));
+    if (now - a.t0 < a.dur && el.isConnected) requestAnimationFrame(step);
+  };
+  step(performance.now());
+  // Browsers pause animation frames in background tabs; make sure the real
+  // amount always lands even if the count never got to finish.
+  setTimeout(() => { if (el.isConnected && anims.get(el.dataset.tween) === a) el.textContent = dollars(a.to); }, a.dur + 80);
 }
 
 function render() {

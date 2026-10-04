@@ -117,6 +117,8 @@ button { cursor: pointer; }
 }
 /* Thermal printers feed in stutters, not one smooth slide. */
 .paper.printing { animation: feed 1.25s var(--ease) both; }
+.paper.printing .p-lines > li { animation: line-in 0.3s var(--ease) backwards; animation-delay: calc(0.45s + var(--i, 0) * 55ms); }
+@keyframes line-in { from { opacity: 0; transform: translateY(-4px); } }
 @keyframes feed {
   0% { transform: translateY(-100%); }
   12% { transform: translateY(-86%); }
@@ -275,7 +277,14 @@ input.p-merchant { font-weight: 600; }
   font-size: 14.5px; font-weight: 600; color: var(--muted);
 }
 .steps button:hover:not(:disabled) { color: var(--ui); }
-.steps button[aria-current] { color: var(--ui); border-bottom-color: var(--ui); }
+.steps button[aria-current] { color: var(--ui); }
+.steps ol { position: relative; }
+.step-ink {
+  position: absolute; left: 0; bottom: 0; height: 2.5px; width: 0;
+  border-radius: 2px; background: var(--ui);
+  transition: transform 0.45s cubic-bezier(0.3, 1.25, 0.5, 1), width 0.45s cubic-bezier(0.3, 1.25, 0.5, 1);
+  pointer-events: none;
+}
 .steps button:disabled { cursor: default; opacity: 0.45; }
 .step-n { display: grid; place-items: center; width: 21px; height: 21px; border-radius: 50%; border: 1.5px solid currentColor; font: 600 11px/1 var(--f-mono); }
 .steps button[aria-current] .step-n { background: var(--ui); border-color: var(--ui); color: var(--table); }
@@ -532,6 +541,9 @@ body.dragging .drop { transform: scale(1.01); }
 .stage.enter .iou:nth-child(n + 5) { animation-delay: 0.2s; }
 .iou-top { display: flex; justify-content: space-between; align-items: baseline; gap: 16px; }
 .iou-name { font: 400 38px/0.9 var(--f-ink); color: var(--ink); }
+.iou-name { min-width: 0; overflow-wrap: anywhere; }
+.iou-amt { flex: none; }
+.iou summary { overflow-wrap: anywhere; }
 .iou-amt { font-size: 30px; font-weight: 500; }
 .iou-sub { display: flex; justify-content: space-between; align-items: center; gap: 12px; margin-top: 2px; }
 .iou-sub .btn-sm { padding: 5px 11px; font-size: 13px; border-radius: 6px; }
