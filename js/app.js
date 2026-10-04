@@ -992,6 +992,7 @@ function applyTheme(theme, animate) {
   const dark = theme === "dark";
   const btn = $("#theme-btn");
   btn.innerHTML = dark ? SUN : MOON;
+  if (animate && !reduced.matches) btn.firstElementChild.classList.add("swap");
   btn.setAttribute("aria-label", dark ? "Switch to light mode" : "Switch to dark mode");
   document.querySelector('meta[name="theme-color"]')?.setAttribute("content", dark ? "#121819" : "#d8dfdc");
 }
