@@ -37,10 +37,19 @@ test("covering someone moves their share to others", () => {
   assert.equal(sum(r.rows.map((x) => x.total)), r.grandTotal);
 });
 
-test("issues flag unclaimed, over and under claims", () => {
+test("issues flag unclaimed and double-claimed lines; partly claimed lines are fine", () => {
   const claims = { i2: { a: 1 }, i3: { a: 1, b: 1 } };
   const types = findIssues(items, people, claims).map((i) => `${i.item.id}:${i.type}`);
-  assert.deepEqual(types, ["i1:unclaimed", "i2:under", "i3:over"]);
+  assert.deepEqual(types, ["i1:unclaimed", "i3:over"]);
+});
+
+test("a partly claimed line belongs to whoever claimed it", () => {
+  const noodles = [{ id: "n", name: "Dan Dan Noodles", qty: 2, price: 2800 }, { id: "b", name: "Pork Buns", qty: 3, price: 1350 }];
+  const claims = { n: { a: 1 }, b: { b: 1, c: 1 } };
+  const r = computeSplit({ items: noodles, people, claims, tip: { ...tip, percent: 0 } });
+  assert.equal(r.rows[0].food, 2800);
+  assert.equal(r.rows[1].food + r.rows[2].food, 1350);
+  assert.ok(Math.abs(r.rows[1].food - r.rows[2].food) <= 1);
 });
 
 test("parser reads a typical receipt", () => {

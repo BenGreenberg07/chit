@@ -74,7 +74,6 @@ export function findIssues(items, people, claims, portions = {}) {
     }
     if (!claimers.length) issues.push({ type: "unclaimed", item, claimers, units });
     else if (!item.shared && units > item.qty) issues.push({ type: "over", item, claimers, units });
-    else if (!item.shared && !item.restEven && units < item.qty) issues.push({ type: "under", item, claimers, units });
   }
   return issues;
 }
@@ -104,12 +103,11 @@ export function computeSplit({ items, people, claims, portions = {}, tax = 0, fe
     }
     let sum = w.reduce((a, b) => a + b, 0);
     if (!sum) { w = w.map(() => 1); sum = n; }
-    // A partly claimed multi-unit item: claimers pay for their units and the
-    // remainder spreads over everyone.
-    const leftover = !it.shared && sum < it.qty ? it.qty - sum : 0;
-    const per = it.price / it.qty;
+    // Whoever claimed a line pays for all of it, in proportion to the units
+    // they tapped: if Ben is the only one who tapped "2 Dan Dan Noodles", he
+    // had both, and nobody else pays for a line they never touched.
     w.forEach((wi, i) => {
-      const share = leftover ? wi * per + (leftover * per) / n : (it.price * wi) / sum;
+      const share = (it.price * wi) / sum;
       if (!share) return;
       food[i] += share;
       itemShares[i].push({ id: it.id, name: it.name, cents: share, units: wi });

@@ -160,7 +160,7 @@ const marksHidden = () => S.step === "claim" && S.claimMode === "private" && !S.
 function visibleIssues() {
   if (S.step !== "claim") return [];
   if (S.claimMode === "private") return S.priv.revealed ? issues() : [];
-  return S.claimChecked ? issues() : issues().filter((i) => i.type !== "unclaimed" && i.type !== "under");
+  return S.claimChecked ? issues() : issues().filter((i) => i.type !== "unclaimed");
 }
 
 // ---------- receipt ----------
@@ -546,10 +546,6 @@ function issuesHTML(list, final) {
           ? `Shares of ${esc(item.name)} add up to more than all of it`
           : `Shares of ${esc(item.name)} only cover ${pct}%`;
         actions = `<button class="btn btn-sm" data-action="portion-clear" data-id="${item.id}">Split it evenly instead</button>`;
-      } else {
-        title = `Only ${units} of ${item.qty} ${esc(item.name)} claimed`;
-        actions = `<button class="btn btn-sm" data-action="fix-shared" data-id="${item.id}">${joined(claimers)} ${claimers.length === 1 ? "had" : "split"} all ${item.qty}</button>
-          <button class="btn btn-sm btn-quiet" data-action="fix-rest" data-id="${item.id}">Split the rest with everyone</button>`;
       }
       return `<li class="issue"><div class="issue-head"><span>${title}</span><span class="num">${dollars(item.price)}</span></div><div class="issue-actions">${actions}</div></li>`;
     }).join("")}</ul>`;
@@ -568,12 +564,7 @@ function claimedSoFar() {
       continue;
     }
     const units = ids.reduce((a, id) => a + c[id], 0);
-    const pool = it.shared || units > it.qty ? units : it.qty;
-    ids.forEach((id) => { out[id] += (it.price * c[id]) / pool; });
-    if (it.restEven && !it.shared && units < it.qty) {
-      const each = (it.price * (it.qty - units)) / it.qty / S.people.length;
-      S.people.forEach((p) => { out[p.id] += each; });
-    }
+    ids.forEach((id) => { out[id] += (it.price * c[id]) / units; });
   }
   return out;
 }
@@ -706,7 +697,11 @@ function stageSettle() {
         ${r.items.length ? `<details><summary>What ${esc(r.p.name)} had</summary><ul>${r.items.map((i) => {
           const it = S.items.find((x) => x.id === i.id);
           const sharers = Object.values(S.claims[it.id] || {}).filter((v) => v > 0).length;
-          const note = i.portion ? fracLabel(i.portion) : it.qty > 1 && !it.shared && sharers ? `${i.units} of ${it.qty}` : (sharers !== 1 || it.shared ? "shared" : "");
+          const tapped = Object.values(S.claims[it.id] || {}).reduce((a, v) => a + (v > 0 ? v : 0), 0);
+          const note = i.portion ? fracLabel(i.portion)
+            : sharers === 1 ? (it.qty > 1 ? `all ${it.qty}` : "")
+            : it.qty > 1 && !it.shared && tapped === it.qty ? `${i.units} of ${it.qty}`
+            : "shared";
           return `<li><span>${esc(i.name)}${note ? ` <small>${note}</small>` : ""}</span><span class="num">${money(Math.round(i.cents))}</span></li>`;
         }).join("")}</ul></details>` : ""}
         <svg class="strike" viewBox="0 0 400 20" preserveAspectRatio="none" aria-hidden="true"><path d="M4 12C90 6 200 14 396 7"/></svg>
@@ -953,7 +948,6 @@ function toShared() {
   if (S.payer) m.payer = S.payer;
   for (const it of S.items) {
     if (it.shared) m["sh:" + it.id] = true;
-    if (it.restEven) m["re:" + it.id] = true;
     for (const [pid, u] of Object.entries(S.claims[it.id] || {})) if (u > 0) m[`c:${it.id}:${pid}`] = u;
     for (const [pid, f] of Object.entries(S.portions[it.id] || {})) if (f > 0) m[`f:${it.id}:${pid}`] = f;
   }
@@ -974,7 +968,7 @@ function fromShared(d) {
   S.fees = b.fees || [];
   S.printed = b.printed || { subtotal: null, total: null };
   S.guests = b.guests ?? null;
-  S.items = (b.items || []).map((i) => ({ ...i, shared: !!d["sh:" + i.id], restEven: !!d["re:" + i.id] }));
+  S.items = (b.items || []).map((i) => ({ ...i, shared: !!d["sh:" + i.id] }));
   S.people = Object.entries(d)
     .filter(([k, v]) => k.startsWith("p:") && v)
     .map(([k, v]) => ({ id: k.slice(2), ...v }))
@@ -1358,7 +1352,6 @@ const actions = {
     if (ids.length === 1) S.claims[it.id] = { [ids[0]]: it.qty };
     else it.shared = true;
   },
-  "fix-rest": (el) => { S.items.find((i) => i.id === el.dataset.id).restEven = true; },
   picker: (el) => { S.tip.picker = el.dataset.id; },
   "tip-pct": (el) => { S.tip.mode = "percent"; S.tip.percent = Number(el.dataset.pct); S.tip.fromReceipt = false; },
   "tip-change": () => { tipEditing = true; },
