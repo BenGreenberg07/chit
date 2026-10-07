@@ -396,7 +396,7 @@ function stageReceipt() {
   if (!S.items.length && !S.manual) {
     return `
       <h2>Split the check from a photo</h2>
-      <p class="lede">Snap the receipt. Everyone claims what they ordered, one person picks the tip, and Chit works out who owes what, to the cent. No accounts, nothing to install.</p>
+      <p class="lede">Snap the receipt. Everyone claims what they ordered, one person picks the tip, and Chit works out who owes what, to the cent.</p>
       ${touch.matches ? `
       <label class="shoot" for="camera">
         <span class="shoot-lens" aria-hidden="true"><svg viewBox="0 0 48 48"><path d="M12 6h24v36l-4-3-4 3-4-3-4 3-4-3-4 3z"/><path d="M18 16h12M18 22h8M18 28h10"/></svg></span>

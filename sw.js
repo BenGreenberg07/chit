@@ -1,6 +1,6 @@
 // Keeps the app shell on the phone so Chit opens with bad or no signal.
 // Bump CACHE whenever a shell file changes.
-const CACHE = "chit-v13";
+const CACHE = "chit-v14";
 const SHELL = [
   "./", "index.html", "styles.css", "js/app.js", "js/parse.js", "js/split.js", "js/sync.js",
   "manifest.webmanifest", "assets/icon-192.png", "assets/icon-180.png", "assets/sample-receipt.jpg",
