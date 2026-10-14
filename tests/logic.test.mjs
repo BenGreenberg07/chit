@@ -187,3 +187,28 @@ test("only repairs a misread digit when exactly one swap fits", () => {
   const r = parseReceipt(`Soup 12.00\nSalad 13.00\nSubtotal 30.00`);
   assert.deepEqual(r.items.map((i) => i.price), [1200, 1300]);
 });
+
+// Pizzeria Stella prints each amount half a line above its label, so a sharp
+// photo can pair them wrong, split them apart, or lose the tax amount.
+test("re-pairs totals printed out of line with their labels", () => {
+  const head = "Pizzeria Stella\n420 S 2nd Street\n1 Rigatoni Alla Vodka $21.00\n2 Pomodoro $38.00\n1 Margherita $20.00\n";
+  const tails = [
+    "$79.00\nSubtotal $6.32\nTax $85.32\nTotal",
+    "Subtotal $79.00\n$6.32\nTax\nTotal $85.32",
+    "$79.00\nSubtotal\n$6.32\nTax\n$85.32\nTotal",
+    "Subtotal $79.00 $6.32\nTax $85.32\nTotal",
+    "Subtotal $79.00\nTax\nTotal $85.32",
+    "Subtotal $79.00\nTex $6.32\nTotal $85.32",
+    "$79.00\nSubtotal $6.32\nTax $85.32\nTotal\nPay with your mobile device at",
+  ];
+  for (const tail of tails) {
+    const r = parseReceipt(head + tail);
+    assert.deepEqual([r.subtotal, r.tax, r.total], [7900, 632, 8532], tail);
+    assert.equal(r.items.length, 3, tail);
+  }
+});
+
+test("doesn't invent tax a receipt never printed", () => {
+  const r = parseReceipt("Soup 12.00\nSalad 13.00\nSubtotal 25.00\nTotal 31.00");
+  assert.equal(r.tax, 0);
+});

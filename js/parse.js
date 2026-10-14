@@ -6,7 +6,7 @@ const PRICE_AT_END = /(-?\$?\s?[0-9OoSIl]{1,4}\s?[.,]\s?[0-9OoSIl]{2})\s*[A-Za-z
 const STREET = /^\s*\d{1,6}\s+(?:[NSEW]\.?\s+)?\S.*\b(st|street|ave|avenue|rd|road|blvd|boulevard|ln|lane|dr|drive|way|pl|place|sq|square|pike|hwy|highway|ct|court|pkwy|parkway)\b\.?/i;
 
 const SUBTOTAL = /\bsub\s*-?\s*tota[l1]|\bfood\s*(?:&|and)?\s*bev|\bsubtt?l\b/i;
-const TAX = /\b(sales\s*)?tax\b|\bhst\b|\bgst\b|\bvat\b/i;
+const TAX = /\b(sales\s*)?t[aeo@]x\b(?!-)|\b[l1I]ax\b|\bhst\b|\bgst\b|\bvat\b/i;
 const TOTAL = /\btota[l1]\b|\bamount\s*due\b|\bbalance\s*due\b|\bamt\s*due\b/i;
 const FEE = /gratuity|\bfees?\b|service\s*charge|auto\s*grat|kitchen\s*appreciation|surcharge|\bsvc\b/i;
 // A tip someone already wrote in or added at the register, as opposed to the
@@ -128,11 +128,18 @@ export function parseReceipt(text) {
     out.merchant = merchantFrom(lines[k]);
   }
 
-  for (const line of lines) {
+  // Subtotal, tax and total labels and the amounts near them, in reading
+  // order, in case the reader paired them wrong (see realignTotals).
+  const summary = [];
+  const keyOf = (t) => (SUBTOTAL.test(t) ? "subtotal" : TAX.test(t) ? "tax" : TOTAL.test(t) ? "total" : null);
+
+  for (const [k, line] of lines.entries()) {
     const g = line.match(/\b(?:guests?(?:\s*count)?|covers?|party(?:\s*size)?)\s*[:#]?\s*(\d{1,2})\b/i);
     if (g) out.guests = Number(g[1]);
     const m = findPrice(line);
     if (!m) {
+      const key = keyOf(trimNoise(line));
+      if (key && trimNoise(line).length <= 20) summary.push({ k, key });
       if (!out.merchant) {
         const name = merchantFrom(line);
         if (name) out.merchant = name;
@@ -140,7 +147,17 @@ export function parseReceipt(text) {
       continue;
     }
     const cents = toCents(m.token);
-    const label = trimNoise(line.slice(0, m.index).trim(), { tail: false });
+    let label = trimNoise(line.slice(0, m.index).trim(), { tail: false });
+    // A lone lowercase scrap before an amount is a speck, not an item ("ig $79.00").
+    if (/^([a-z]{1,2}|\W*\w\W*)$/.test(label)) label = "";
+    const key = /[a-z]{2,}/i.test(label) ? keyOf(label) : null;
+    if (key || !/[a-z]{2,}/i.test(label)) {
+      if (key) summary.push({ k, key });
+      for (const x of line.matchAll(ANY_PRICE)) {
+        const c = toCents(x[0]);
+        if (c !== null) summary.push({ k, cents: c });
+      }
+    }
     if (cents === null || !/[a-z]{2,}/i.test(label)) continue;
 
     if (SUBTOTAL.test(label)) { out.subtotal = cents; continue; }
@@ -157,8 +174,55 @@ export function parseReceipt(text) {
     if (!name || cents === 0) continue;
     out.items.push({ name, qty: q.qty, price: cents });
   }
+  realignTotals(out, summary);
   repairDigits(out);
   return out;
+}
+
+// Some printers set the amounts half a line above their labels, and a sharp
+// photo can then pair "Subtotal" with the tax amount, or leave "Tax" on a
+// line of its own. When the receipt doesn't add up as read, re-pair the
+// summary labels with the nearby amounts in order and keep a pairing that
+// balances.
+function realignTotals(r, summary) {
+  if (!r.items.length || balances(r)) return;
+  const labels = [];
+  for (const e of summary) {
+    if (!e.key || labels.some((l) => l.key === e.key)) continue;
+    labels.push(e);
+    if (e.key === "total") break;
+  }
+  if (labels.length < 2) return;
+  const from = labels[0].k - 1;
+  const to = labels.at(-1).k + 1;
+  const amounts = summary.filter((e) => e.cents != null && e.k >= from && e.k <= to).map((e) => e.cents);
+  const trials = [];
+  for (let o = 0; o + labels.length <= amounts.length; o++) {
+    const trial = { ...r, tax: 0, items: r.items.map((i) => ({ ...i })) };
+    labels.forEach((l, i) => { trial[l.key] = amounts[o + i]; });
+    trials.push(trial);
+  }
+  // A pairing that balances as is, or after fixing one faded digit.
+  let pick = trials.find(balances);
+  if (!pick) {
+    pick = trials.find((t) => { repairDigits(t); return balances(t); });
+    if (pick) r.items = pick.items;
+  }
+  // Nothing balances, but there's exactly one amount per label: pair them in
+  // order so the receipt check can show what's off.
+  pick ??= labels.length === amounts.length ? trials[0] : null;
+  if (pick) {
+    for (const l of labels) r[l.key] = pick[l.key];
+    if (balances(r)) return;
+  }
+  // "Tax" printed but its amount never read: whatever the subtotal and total
+  // leave over is the tax, if that's a believable rate.
+  const items = r.items.reduce((s, i) => s + i.price, 0);
+  const fees = r.fees.reduce((s, f) => s + f.amount, 0);
+  if (!r.tax && labels.some((l) => l.key === "tax") && r.subtotal === items && r.total != null) {
+    const tax = r.total - items - fees - (r.tip ?? 0);
+    if (tax > 0 && tax <= items * 0.2) r.tax = tax;
+  }
 }
 
 // Thermal print fades, and the reader then mixes up digits with similar
@@ -201,12 +265,20 @@ function repairDigits(r) {
   }
   if (fixes.length === 1) return fixes[0]();
 
-  // The lines, tax and total all agree and only the printed subtotal is off,
-  // even by more than one digit ("$79.00" read as "09.00"): trust the rest.
+  // The lines, tax and total all agree and only the printed subtotal is off
+  // by a dropped or changed digit ("$79.00" read as "09.00"): trust the rest.
   if (r.subtotal != null && r.total != null && sum + fees + r.tax + tip === r.total) {
     const ways = [...new Set([sum, sum + discounts, sum + fees])];
-    if (ways.length === 1) r.subtotal = ways[0];
+    if (ways.length === 1 && oneDigitApart(String(r.subtotal), String(ways[0]))) r.subtotal = ways[0];
   }
+}
+
+// One digit dropped, added or changed: "900" vs "7900", "7100" vs "7900".
+function oneDigitApart(a, b) {
+  if (Math.abs(a.length - b.length) > 1) return false;
+  let i = 0;
+  while (i < a.length && a[i] === b[i]) i++;
+  return a.slice(i + 1) === b.slice(i + 1) || a.slice(i) === b.slice(i + 1) || a.slice(i + 1) === b.slice(i);
 }
 
 function lookalikes(cents) {
@@ -220,11 +292,23 @@ function lookalikes(cents) {
 
 // How much to trust a read: one whose lines, subtotal, tax and total all
 // agree beats anything else; otherwise more of the receipt found is better.
-export function readScore(r) {
+function checks(r) {
   const fees = r.fees.reduce((s, f) => s + f.amount, 0);
+  const discounts = r.fees.reduce((s, f) => s + Math.min(0, f.amount), 0);
   const items = r.items.reduce((s, i) => s + i.price, 0);
-  const subOk = r.subtotal != null && [items, items + fees, items + Math.min(0, fees)].includes(r.subtotal);
-  const totalOk = r.total != null && Math.abs(items + fees + r.tax + (r.tip ?? 0) - r.total) <= 2;
+  return {
+    subOk: r.subtotal != null && [items, items + discounts, items + fees].includes(r.subtotal),
+    totalOk: r.total != null && Math.abs(items + fees + r.tax + (r.tip ?? 0) - r.total) <= 2,
+  };
+}
+
+function balances(r) {
+  const { subOk, totalOk } = checks(r);
+  return subOk && totalOk;
+}
+
+export function readScore(r) {
+  const { subOk, totalOk } = checks(r);
   return (subOk && totalOk ? 1000 : subOk || totalOk ? 500 : 0)
     + r.items.length * 10 + (r.subtotal != null) + (r.total != null) + (r.tax > 0) + (r.merchant ? 1 : 0);
 }

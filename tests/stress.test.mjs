@@ -223,7 +223,15 @@ test("parser recovers receipts through photo noise", () => {
       const alts = [...LOOK[d[at]]].filter((c) => at > 0 || c !== "0");
       sums[k] = Number(d.slice(0, at) + pick(r, alts) + d.slice(at + 1));
     }
-    lines.push(noisy(`Subtotal ${money(sums[0])}`), noisy(`Tax ${money(sums[1])}`), noisy(`Total ${money(sums[2])}`));
+    // Printers that set amounts half a line above their labels, read back
+    // paired wrong, split apart, or with the tax amount lost.
+    const labs = ["Subtotal", "Tax", "Total"];
+    const amts = sums.map(money);
+    const style = sums[1] === tax && sums[0] === sub && sums[2] === sub + tax ? pick(r, ["inline", "inline", "shifted", "split", "lost"]) : "inline";
+    if (style === "inline") labs.forEach((l, k) => lines.push(noisy(`${l} ${amts[k]}`)));
+    if (style === "shifted") lines.push(noisy(amts[0]), noisy(`${labs[0]} ${amts[1]}`), noisy(`${labs[1]} ${amts[2]}`), noisy(labs[2]));
+    if (style === "split") labs.forEach((l, k) => lines.push(noisy(amts[k]), noisy(l)));
+    if (style === "lost") lines.push(noisy(`${labs[0]} ${amts[0]}`), noisy(labs[1]), noisy(`${labs[2]} ${amts[2]}`));
     lines.push(noisy("Pay with your mobile device at"));
 
     const text = placed ? textFromWords(rows.map((row) => layOut(r, row))) : lines.join("\n");
