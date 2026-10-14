@@ -3,7 +3,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { computeSplit, findIssues } from "../js/split.js";
-import { parseReceipt } from "../js/parse.js";
+import { parseReceipt, textFromWords } from "../js/parse.js";
 import { Room } from "../js/sync.js";
 
 // Small seeded PRNG so failures are reproducible.
@@ -133,6 +133,121 @@ CHANGE DUE 0.00`,
     if (c.fees) assert.deepEqual(r.fees.map((f) => f.amount), c.fees, name);
     if (c.tip) assert.equal(r.tip, c.tip, name);
   }
+});
+
+// Places a line's words the way the reader reports them: a margin speck far
+// left, words a space apart, the price out at the right edge, then a scrap.
+function layOut(r, { before, line, after }) {
+  const words = [];
+  let x = int(r, 0, 30);
+  const put = (text) => { const w = text.length * 18; words.push({ text, bbox: { x0: x, x1: x + w } }); x += w; };
+  if (before) { put(before); x += int(r, 110, 400); }
+  const parts = line.split(" ");
+  const priced = /\d\.\d\d$/.test(parts.at(-1));
+  parts.forEach((p, k) => {
+    if (k) x += priced && k === parts.length - 1 ? int(r, 150, 600) : int(r, 16, 28);
+    put(p);
+  });
+  if (after) for (const p of after.split(" ")) { x += int(r, 80, 400); put(p); }
+  return { words };
+}
+
+// Photo noise like the shaded Pizzeria Stella shot: specks in the margins on
+// both sides of each line, junk lines from the table and logo, and now and
+// then one faded digit. The parser must recover every line exactly, or, when
+// a faded digit can't be pinned down, leave the lines visibly off the
+// subtotal so the receipt check flags it.
+const DISHES = ["Rigatoni Alla Vodka", "Pomodoro", "Margherita", "Pad See Ew", "BLT Club", "Caesar Salad",
+  "Chicken Parm", "Fish Tacos", "Spicy Wontons", "Garlic Knots", "Cacio e Pepe", "Iced Tea", "Pinot Noir",
+  "Lamb Burger", "Tuna Tartare", "Mushroom Risotto", "Short Rib", "Kids Mac", "Draft IPA", "Espresso"];
+const PLACES = ["Pizzeria Stella", "Noodle Bar", "The Corner Tavern", "Luna Rossa", "Golden Dragon", "Cafe Mia"];
+const LEAD = ["i", "|", "[", "i]", "id", "F", "ir", "-", ":", "{", "b", "y", "ig", "\\"];
+// Specks that read as digits look exactly like a quantity in plain text, so
+// they only appear in the word-position runs, where their distance gives
+// them away.
+const DIGIT_LEAD = ["3", "5", "1", "8"];
+const TAIL = ["bo \\", "=", "8 Ke hc", "R. —", "he a", "ho,", "nC —", "3 ew.", "0", 'hg"', "p> =", "fa e", "| Nog", "SEE"];
+const JUNK = ["- |", "b or $ 5", "STESLA Se", "4 % ET ae", "A a | ~ BET ee Pe", "ig = =. =i", "/A = Be 5 8 ~ .", "NE hy", "\\ Seed ke ne"];
+const LOOK = { 0: "689", 1: "47", 2: "7", 3: "589", 4: "19", 5: "368", 6: "058", 7: "12", 8: "03569", 9: "0348" };
+const money = (c) => "$" + (c / 100).toFixed(2);
+
+test("parser recovers receipts through photo noise", () => {
+  let repaired = 0;
+  let flagged = 0;
+  for (let seed = 1; seed <= 400; seed++) {
+    const r = rng(seed);
+    // Odd seeds go through word positions like the reader returns; even
+    // seeds are plain text.
+    const placed = seed % 2 === 1;
+    const lead = () => pick(r, placed && r() < 0.4 ? DIGIT_LEAD : LEAD);
+    const rows = [];
+    const noisy = (line) => {
+      const before = r() < 0.6 ? lead() : "";
+      const after = r() < 0.6 ? pick(r, TAIL) : "";
+      rows.push({ before, line, after });
+      return [before, line, after].filter(Boolean).join(" ");
+    };
+    const place = pick(r, PLACES);
+    const items = Array.from({ length: int(r, 1, 9) }, () => {
+      const qty = r() < 0.3 ? int(r, 2, 4) : 1;
+      return { name: pick(r, DISHES), qty, price: int(r, 3, 60) * 100 * qty + pick(r, [0, 0, 50, 25, 99]) };
+    });
+    const sub = sum(items.map((i) => i.price));
+    const tax = Math.round(sub * 0.08);
+    const lines = [];
+    const junk = () => { const j = pick(r, JUNK); rows.push({ before: "", line: j, after: "" }); return j; };
+    for (let k = int(r, 0, 4); k > 0; k--) lines.push(junk());
+    lines.push(noisy(place), noisy(`${int(r, 10, 9999)} S ${int(r, 1, 40)}th Street`), noisy("Philadelphia, PA 19147"));
+    lines.push(noisy(`Server: Madison G`), noisy(`Check #${int(r, 1, 99)} Table ${int(r, 1, 300)}`), noisy(`Guest Count: ${int(r, 1, 9)}`));
+    // A faded digit in one price, sometimes.
+    const printed = items.map((i) => i.price);
+    let faded = -1;
+    if (r() < 0.35) {
+      faded = int(r, 0, items.length - 1);
+      const d = String(printed[faded]);
+      const at = int(r, 0, d.length - 1);
+      // A leading digit never fades to 0; that would just shorten the price.
+      const alts = [...LOOK[d[at]]].filter((c) => at > 0 || c !== "0");
+      printed[faded] = Number(d.slice(0, at) + pick(r, alts) + d.slice(at + 1));
+    }
+    items.forEach((it, k) => {
+      lines.push(noisy(`${it.qty > 1 || r() < 0.5 ? it.qty + " " : ""}${it.name} ${money(printed[k])}`));
+      if (r() < 0.2) lines.push(junk());
+    });
+    // Or one faded digit in the subtotal, tax or total instead.
+    const sums = [sub, tax, sub + tax];
+    if (faded < 0 && r() < 0.3) {
+      const k = int(r, 0, 2);
+      const d = String(sums[k]);
+      const at = int(r, 0, d.length - 1);
+      const alts = [...LOOK[d[at]]].filter((c) => at > 0 || c !== "0");
+      sums[k] = Number(d.slice(0, at) + pick(r, alts) + d.slice(at + 1));
+    }
+    lines.push(noisy(`Subtotal ${money(sums[0])}`), noisy(`Tax ${money(sums[1])}`), noisy(`Total ${money(sums[2])}`));
+    lines.push(noisy("Pay with your mobile device at"));
+
+    const text = placed ? textFromWords(rows.map((row) => layOut(r, row))) : lines.join("\n");
+    const out = parseReceipt(text);
+    const got = out.items.map((i) => [i.name, i.qty, i.price]);
+    const want = items.map((i) => [i.name, i.qty, i.price]);
+    const msg = `seed ${seed}\n${lines.join("\n")}\n---\n${text}`;
+    assert.equal(out.merchant, place, msg);
+    assert.deepEqual(got.map((g) => g.slice(0, 2)), want.map((w) => w.slice(0, 2)), msg);
+    const truth = { items: want, subtotal: sub, tax, total: sub + tax };
+    const read = { items: got, subtotal: out.subtotal, tax: out.tax, total: out.total };
+    const addsUp = sum(out.items.map((i) => i.price)) === out.subtotal && out.subtotal + out.tax === out.total;
+    const misread = faded >= 0 || sums.some((v, k) => v !== [sub, tax, sub + tax][k]);
+    if (!misread) {
+      assert.deepEqual(read, truth, msg);
+    } else if (addsUp) {
+      // Whenever the repaired receipt balances, it must be the true one.
+      assert.deepEqual(read, truth, msg);
+      repaired++;
+    } else {
+      flagged++;
+    }
+  }
+  assert.ok(repaired > flagged, `repaired ${repaired}, left flagged ${flagged}`);
 });
 
 test("parser survives junk without throwing", () => {

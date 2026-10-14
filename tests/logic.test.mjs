@@ -158,3 +158,32 @@ Total 10.00`);
   assert.equal(r.tip, null);
   assert.equal(r.items.length, 1);
 });
+
+// Real reads of a shaded Pizzeria Stella photo: margin specks around every
+// line, logo art above the name, and one faded 8 read as a 6.
+test("parses a noisy photo of a shaded receipt", () => {
+  const reads = [
+    `- |\nb or $ 5\nSTESLA Se\n4 % ET ae\nie Pizzeria Stella =\n420 S 2nd Street\nPhiladelphia, PA 19147 | Nog\nserver: Madison G SE\nCheck #5 Table 204 EEE\nGuest Count: 4 T= A\nb ordered: 10/9/26 12:05 PH =H\ni 1 Rigatoni Alla Vodka $21.00 R. —\ni] 2 Pomodoro $36.00 =\nd 1 Margherita $20.00 he a\nig = =. =i\n- Subtotal $79.00 ho,\nTax $6.32 nC —\nTotal $85.32 fa e\nPay with your mobile device at Se\n[ 7 upngo.com/Pizzeriastella v av`,
+    `A a | ~ BET ee Pe\n[¥ Pizzeria Stella =\n: 420 S 2nd Street .\ni 1 Rigatoni Alla Vodka $21.00 == ko\n3 2 Pomodoro $38.00 =\nF 1 Margherita $20.00 = y\nEE - Subtotal $79.00 hg"\n5 Tax $6.32 p> =\n| 3 Total $85.32 I e.`,
+  ];
+  for (const text of reads) {
+    const r = parseReceipt(text);
+    assert.equal(r.merchant, "Pizzeria Stella");
+    assert.deepEqual(r.items.map((i) => [i.name, i.qty, i.price]), [
+      ["Rigatoni Alla Vodka", 1, 2100],
+      ["Pomodoro", 2, 3800],
+      ["Margherita", 1, 2000],
+    ]);
+    assert.equal(r.subtotal, 7900);
+    assert.equal(r.tax, 632);
+    assert.equal(r.total, 8532);
+    if (/Guest/.test(text)) assert.equal(r.guests, 4);
+  }
+});
+
+test("only repairs a misread digit when exactly one swap fits", () => {
+  // 12.00 + 13.00 should be 30.00: 13 -> 18 fits, and so does 12 -> 17,
+  // so neither is changed.
+  const r = parseReceipt(`Soup 12.00\nSalad 13.00\nSubtotal 30.00`);
+  assert.deepEqual(r.items.map((i) => i.price), [1200, 1300]);
+});

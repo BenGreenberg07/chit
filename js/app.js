@@ -1,4 +1,5 @@
-import { parseReceipt } from "./parse.js";
+import { parseReceipt, textFromWords, readScore, addsUp } from "./parse.js";
+import { flattenLight } from "./prep.js";
 import { computeSplit, findIssues, portionShares } from "./split.js";
 import { Room, newCode, cleanCode } from "./sync.js";
 
@@ -891,7 +892,7 @@ function warmReader() {
   reader.catch(() => {});
   return reader;
 }
-async function toCanvas(src) {
+async function preparePhoto(src) {
   // img.decode() can stall when the browser deprioritizes the tab; the plain
   // load event always fires.
   const img = new Image();
@@ -906,10 +907,24 @@ async function toCanvas(src) {
   const c = document.createElement("canvas");
   c.width = Math.round(w * scale);
   c.height = Math.round(img.naturalHeight * scale);
-  const g = c.getContext("2d");
-  g.filter = "grayscale(1) contrast(1.35)";
+  const g = c.getContext("2d", { willReadFrequently: true });
   g.drawImage(img, 0, 0, c.width, c.height);
-  return c;
+  const raw = g.getImageData(0, 0, c.width, c.height).data.slice();
+  // Even out shadows and glare so faded or shaded prices still read.
+  return (opts) => {
+    const px = g.getImageData(0, 0, c.width, c.height);
+    px.data.set(flattenLight(raw, c.width, c.height, opts));
+    g.putImageData(px, 0, 0);
+    return c;
+  };
+}
+
+async function readOnce(worker, canvas) {
+  const { data } = await worker.recognize(canvas);
+  const lines = data.lines?.length
+    ? data.lines
+    : (data.blocks || []).flatMap((b) => b.paragraphs.flatMap((p) => p.lines));
+  return parseReceipt(lines.length ? textFromWords(lines) : data.text);
 }
 
 function loadParsed(r) {
@@ -928,12 +943,13 @@ function loadParsed(r) {
 
 async function readReceipt(src, fallback) {
   photo = src;
+  let secondLook = false;
   ocr = { status: "reading", progress: 0 };
   render();
   try {
     const worker = warmReader();
     if (!worker) throw new Error("reader");
-    const canvas = await toCanvas(src);
+    const prepared = await preparePhoto(src);
     readerProgress = (m) => {
       const reading = m.status === "recognizing text";
       ocr.progress = reading ? m.progress : 0;
@@ -941,12 +957,18 @@ async function readReceipt(src, fallback) {
       const fill = $(".progress-fill");
       if (fill) fill.style.width = pct + "%";
       const label = $(".progress-label");
-      if (label) label.textContent = reading ? `${pct}% read` : "Getting the reader ready…";
+      if (label) label.textContent = !reading ? "Getting the reader ready…" : secondLook ? `Taking a second look… ${pct}%` : `${pct}% read`;
     };
     const w = await worker;
-    const { data } = await w.recognize(canvas);
+    let r = await readOnce(w, prepared());
+    // Glare or a washed-out print: if the read doesn't add up, look again
+    // with a harder contrast stretch and keep whichever read checks out.
+    if (!addsUp(r)) {
+      secondLook = true;
+      const again = await readOnce(w, prepared({ strong: true }));
+      if (readScore(again) > readScore(r)) r = again;
+    }
     readerProgress = null;
-    const r = parseReceipt(data.text);
     if (!r.items.length) throw new Error("empty");
     loadParsed(r);
     ocr = null;
