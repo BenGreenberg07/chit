@@ -17,7 +17,7 @@ Receipt reading uses Tesseract.js from a CDN, so the first read needs an interne
 1. **Receipt**: drop in a photo (or try the sample, or type it in). Chit reads the lines, then checks them against the printed subtotal and total. Fix anything on the paper; Enter finishes a field.
 2. **Table**: add everyone, up to ten. Each person gets a pen color of their own. Mark who paid.
 3. **Claim**: tap what you had. *Together* mode is one shared screen; *Pass the phone* has each person claim privately, then reveals only the lines that don't add up (unclaimed, double-claimed, or partly claimed multi-unit items), circled in red.
-4. **Tip**: one person picks it. Pre-tax or post-tax base, split by what people ordered or evenly.
+4. **Tip**: one person picks it. Pre-tax or post-tax base, split by what people ordered or evenly. A gratuity already charged on the receipt is read as the tip, so nobody is asked for a second one.
 5. **Settle**: what everyone owes the payer, to the cent (largest-remainder rounding, so shares always sum exactly). Cover someone's share, mark people paid, copy a summary for the group chat.
 
 ## Tables you've had before
