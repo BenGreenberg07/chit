@@ -16,7 +16,7 @@ const int = (r, lo, hi) => lo + Math.floor(r() * (hi - lo + 1));
 const sum = (a) => a.reduce((x, y) => x + y, 0);
 
 function randomBill(r) {
-  const people = Array.from({ length: int(r, 1, 8) }, (_, i) => ({ id: "p" + i }));
+  const people = Array.from({ length: int(r, 1, 10) }, (_, i) => ({ id: "p" + i }));
   const items = Array.from({ length: int(r, 1, 25) }, (_, i) => {
     const qty = r() < 0.25 ? int(r, 2, 6) : 1;
     return { id: "i" + i, name: "Item " + i, qty, price: int(r, 1, 9000) * (r() < 0.3 ? qty : 1), shared: r() < 0.2 };
@@ -62,7 +62,7 @@ test("2000 random bills: totals add up exactly and every row is consistent", () 
 test("people with identical orders pay within a cent, the payer taking any extra", () => {
   for (let seed = 1; seed <= 500; seed++) {
     const r = rng(seed * 7);
-    const n = int(r, 2, 8);
+    const n = int(r, 2, 10);
     const people = Array.from({ length: n }, (_, i) => ({ id: "p" + i }));
     const items = Array.from({ length: int(r, 1, 10) }, (_, i) => ({ id: "i" + i, name: "x", qty: 1, price: int(r, 1, 7777), shared: true }));
     const everyone = Object.fromEntries(people.map((p) => [p.id, 1]));
