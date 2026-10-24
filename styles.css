@@ -769,6 +769,19 @@ body.dragging .drop { transform: scale(1.01); }
 .group-pens .scribble { width: 18px; height: 9px; stroke-width: 3.4; }
 .group-names { font-size: 15.5px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .group-meta { font-size: 12.5px; color: var(--muted); }
+.groups li.picking { flex-wrap: wrap; }
+.groups li.picking .group { border-color: var(--ui); border-bottom-left-radius: 0; border-bottom-right-radius: 0; }
+.group-pick {
+  flex-basis: 100%;
+  display: grid; gap: 12px;
+  margin-top: -1.5px; padding: 14px 12px;
+  border: 1.5px solid var(--ui); border-top-color: var(--rule); border-radius: 0 0 12px 12px;
+}
+.group-pick .hint { margin: 0; }
+.group-pick .chip[aria-pressed="false"] { opacity: 0.45; text-decoration: line-through; }
+.group-pick .chip-seated { opacity: 1; border-style: dashed; }
+.group-pick .chip-seated small { color: var(--muted); }
+.group-pick .next-note { margin: 0; }
 
 .join-cta {
   display: grid; grid-template-columns: 1fr auto; align-items: center; gap: 0 12px;
