@@ -1,7 +1,8 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { allocate, computeSplit, findIssues, portionShares } from "../js/split.js";
-import { parseReceipt } from "../js/parse.js";
+import { parseReceipt, addsUp } from "../js/parse.js";
+import { withGroup, readGroups, inkForName, knownNames, groupLabel, agoText } from "../js/groups.js";
 
 const sum = (a) => a.reduce((x, y) => x + y, 0);
 
@@ -211,4 +212,238 @@ test("re-pairs totals printed out of line with their labels", () => {
 test("doesn't invent tax a receipt never printed", () => {
   const r = parseReceipt("Soup 12.00\nSalad 13.00\nSubtotal 25.00\nTotal 31.00");
   assert.equal(r.tax, 0);
+});
+
+// ---------- a full table of ten ----------
+
+test("ten people splitting one bill still add up to the cent", () => {
+  const people = Array.from({ length: 10 }, (_, i) => ({ id: "p" + i }));
+  const items = [
+    { id: "a", name: "Family noodles", qty: 1, price: 4499, shared: true },
+    { id: "b", name: "Beers", qty: 10, price: 6000 },
+    { id: "c", name: "Cake", qty: 1, price: 999, shared: true },
+  ];
+  const claims = {
+    a: Object.fromEntries(people.map((p) => [p.id, 1])),
+    b: Object.fromEntries(people.map((p) => [p.id, 1])),
+    c: { p0: 1, p1: 1, p2: 1 },
+  };
+  const res = computeSplit({
+    items, people, claims,
+    tax: 937, fees: [{ id: "f", name: "Service", amount: 1500 }],
+    tip: { mode: "percent", percent: 20, base: "pretax", split: "proportional" },
+    payer: "p3",
+  });
+  assert.equal(res.rows.length, 10);
+  assert.equal(res.rows.reduce((a, r) => a + r.total, 0), res.grandTotal);
+  // The three who had cake pay more than the seven who didn't.
+  const cake = res.rows.filter((r) => ["p0", "p1", "p2"].includes(r.id)).map((r) => r.total);
+  const none = res.rows.filter((r) => !["p0", "p1", "p2"].includes(r.id)).map((r) => r.total);
+  assert.ok(Math.min(...cake) > Math.max(...none));
+  assert.equal(findIssues(items, people, claims).length, 0);
+});
+
+test("a ten-person table leaves no line looking unclaimed", () => {
+  const people = Array.from({ length: 10 }, (_, i) => ({ id: "p" + i }));
+  const items = [{ id: "a", name: "Platter", qty: 1, price: 5000, shared: true }];
+  // Nine of ten claimed it: still one line, still fully paid, no issue raised.
+  const claims = { a: Object.fromEntries(people.slice(0, 9).map((p) => [p.id, 1])) };
+  assert.deepEqual(findIssues(items, people, claims), []);
+  const res = computeSplit({ items, people, claims, tax: 0, fees: [], tip: { mode: "amount", amount: 0 }, payer: "p0" });
+  assert.equal(res.rows.find((r) => r.id === "p9").total, 0);
+  assert.equal(res.rows.reduce((a, r) => a + r.total, 0), 5000);
+});
+
+// ---------- remembered tables ----------
+
+test("the same people are one remembered table, however the names are typed", () => {
+  let list = [];
+  list = withGroup(list, [{ name: "Ben", ink: "#1" }, { name: "Mia", ink: "#2" }], 1000, "g1");
+  list = withGroup(list, [{ name: " mia " }, { name: "BEN" }], 2000, "g2");
+  assert.equal(list.length, 1);
+  assert.equal(list[0].id, "g1", "it stays the same table, moved to the front");
+  assert.equal(list[0].at, 2000);
+  // Names refresh so a correction sticks; pens carry over when none are given.
+  assert.deepEqual(list[0].people.map((p) => p.name), ["mia", "BEN"]);
+  assert.deepEqual(list[0].people.map((p) => p.ink), ["#2", "#1"]);
+});
+
+test("a different table is a different group, newest first and capped", () => {
+  let list = [];
+  for (let i = 0; i < 15; i++) {
+    list = withGroup(list, [{ name: "A" + i }, { name: "B" + i }], 1000 + i, "g" + i);
+  }
+  assert.equal(list.length, 12);
+  assert.equal(list[0].id, "g14");
+  assert.ok(list.every((g, i, a) => i === 0 || a[i - 1].at > g.at));
+});
+
+test("a table of one isn't a group", () => {
+  assert.deepEqual(withGroup([], [{ name: "Ben" }], 1), []);
+  assert.deepEqual(withGroup([], [{ name: "Ben" }, { name: "  " }], 1), []);
+});
+
+test("remembers each person's pen and every name it has seen", () => {
+  let list = [];
+  list = withGroup(list, [{ name: "Ben", ink: "#B" }, { name: "Mia", ink: "#M" }], 1000, "g1");
+  list = withGroup(list, [{ name: "Theo", ink: "#T" }, { name: "Ben", ink: "#B2" }], 2000, "g2");
+  assert.equal(inkForName("ben", list), "#B2", "the most recent table wins");
+  assert.equal(inkForName("MIA", list), "#M");
+  assert.equal(inkForName("nobody", list), undefined);
+  assert.deepEqual(knownNames(list), ["Theo", "Ben", "Mia"]);
+});
+
+test("reads a table back the way someone would say it", () => {
+  const g = (names) => ({ id: "x", key: "k", at: 0, people: names.map((n) => ({ name: n })) });
+  assert.equal(groupLabel(g(["Ben", "Mia"])), "Ben and Mia");
+  assert.equal(groupLabel(g(["Ben", "Mia", "Theo"])), "Ben, Mia and Theo");
+  assert.equal(groupLabel(g(["Ben", "Mia", "Theo", "Ada"])), "Ben, Mia and 2 more");
+  const day = 86400000;
+  assert.equal(agoText(5000, 5000), "today");
+  assert.equal(agoText(0, day + 1), "yesterday");
+  assert.equal(agoText(0, 4 * day), "4 days ago");
+  assert.equal(agoText(0, 9 * day), "last week");
+  assert.equal(agoText(0, 21 * day), "3 weeks ago");
+  assert.equal(agoText(0, 400 * day), "over a year ago");
+});
+
+test("a half-written group store doesn't take the Table step down", () => {
+  const fake = (raw) => ({ getItem: () => raw, setItem() {} });
+  for (const raw of ["", "{", "null", '{"not":"a list"}', '[{"id":"x"}]', '[{"id":"x","key":"k","at":1,"people":[{"name":""},{"name":"B"}]}]']) {
+    assert.deepEqual(readGroups(fake(raw)), [], raw);
+  }
+  assert.equal(readGroups(fake('[{"id":"x","key":"k","at":1,"people":[{"name":"A"},{"name":"B"}]}]')).length, 1);
+});
+
+test("a discount bigger than the bill still adds up, and nobody's share vanishes", () => {
+  // A $60 gift card against $40 of food: the table is owed money, and that
+  // refund has to land on people instead of disappearing.
+  const two = [{ id: "a" }, { id: "b" }];
+  const food = [{ id: "i1", name: "Pasta", qty: 1, price: 2500, shared: false },
+                { id: "i2", name: "Soup", qty: 1, price: 1500, shared: false }];
+  const r = computeSplit({
+    items: food, people: two, claims: { i1: { a: 1 }, i2: { b: 1 } },
+    tax: 0, fees: [{ id: "g", name: "Gift card", amount: -6000 }],
+    tip: { mode: "amount", amount: 0 }, payer: "a",
+  });
+  assert.equal(r.grandTotal, -2000);
+  assert.equal(sum(r.rows.map((x) => x.total)), r.grandTotal);
+  // Whoever ordered more of the food is owed more of what's left over.
+  assert.ok(r.rows[0].total < r.rows[1].total);
+  for (const row of r.rows) assert.equal(row.food + row.tax + row.fees + row.tip + row.cover, row.total);
+});
+
+// ---------- a real photo, read by the real reader ----------
+
+// What Tesseract actually returned for a phone photo of a Toast receipt taken
+// on a wood table, shadow across the left half. The grain reads as letters in
+// the margins, the quantity on one line hides behind a scrap, and "Tan Tan"
+// and its price land on separate lines.
+const KENZOKU = `[8 a / fin ; / in / / | / /.
+{ / : / go / a 7: fod F
+} { 3 ! { 4 } Fi / i tf / f J
+GORE a EP AT { fiididid
+7 SR C0) eS Prey Oi i & Hind a iA Lid 2S a
+Kenzoku mazesoba , J
+506 Park Dr
+Boston, MA 02215
+5 SS
+Server: Susan C
+K Ga rs NY, el
+Check #63 Table Ws aii
+Ordered 0/24/26 4:23PH
+boy 2 ap
+1 Salmon Chirashi $22.00
+G55 in . . Riis eat
+| ptr) 3 Thai Spicy $57.00
+2 Shoyu Mazesoba $36.00
+Re 7% i
+2 Vegetable Mazesoba $38.00
+uzu Shio $19.00
+1 Tan Tan
+$18.00
+ff 8 Subtotal $190.00
+Ld J; 20 % Gratuity (20.00%) $38.00
+{4.18 Tax $13.30
+i Total $241.30
+Pei PF Powered by Toast
+Sagi 4 7 4
+TD - | | BB et ad RAR wrth iy TE TF Bh oe REIT ” ¢ :
+i ii Miele IE EE : 4 ini
+Fin, Bie ty, th vey Hiri J {
+oli
+" RR DS “RY ty W ¥ i ¥ 4`;
+
+test("reads a photographed receipt whose lines the reader broke up", () => {
+  const r = parseReceipt(KENZOKU);
+  assert.equal(r.merchant, "Kenzoku mazesoba", "the name above the street address, not the grain above it");
+  assert.deepEqual(r.items.map((i) => [i.qty, i.price]),
+    [[1, 2200], [3, 5700], [2, 3600], [2, 3800], [1, 1900], [1, 1800]]);
+  // "| ptr) 3 Thai Spicy": the scrap must not swallow the quantity, or three
+  // people can't each claim one.
+  assert.equal(r.items[1].name, "Thai Spicy");
+  // "1 Tan Tan" printed above a line holding only "$18.00".
+  assert.equal(r.items.at(-1).name, "Tan Tan");
+  assert.equal(r.subtotal, 19000);
+  assert.equal(r.tax, 1330);
+  assert.equal(r.total, 24130);
+  // The 20% gratuity is the tip, already charged — not a fee to tip on top of.
+  assert.equal(r.tip, 3800);
+  assert.deepEqual(r.fees, []);
+  assert.ok(addsUp(r), "the read has to check out against the printed total");
+});
+
+test("an amount on its own line joins the item above or below it", () => {
+  const above = parseReceipt(`Noodle Bar
+1 Tan Tan
+$18.00
+Subtotal $18.00
+Total $18.00`);
+  assert.deepEqual(above.items.map((i) => [i.name, i.qty, i.price]), [["Tan Tan", 1, 1800]]);
+  const below = parseReceipt(`Noodle Bar
+$19.00
+1 Yuzu Shio
+Subtotal $19.00
+Total $19.00`);
+  assert.deepEqual(below.items.map((i) => [i.name, i.qty, i.price]), [["Yuzu Shio", 1, 1900]]);
+  // Junk off the table is not a dish, however close an amount lands to it.
+  const junk = parseReceipt(`Noodle Bar
+Dumplings $10.00
+Seed ke ne
+$182.50
+Subtotal $10.00`);
+  assert.deepEqual(junk.items.map((i) => i.name), ["Dumplings"]);
+});
+
+test("a charged gratuity is the tip; a suggested one is neither tip nor fee", () => {
+  const charged = parseReceipt(`Noodle Bar
+Dumplings $100.00
+Subtotal $100.00
+20 % Gratuity (20.00%) $20.00
+Tax $7.00
+Total $127.00`);
+  assert.equal(charged.tip, 2000);
+  assert.deepEqual(charged.fees, []);
+  assert.ok(addsUp(charged));
+  // A second gratuity line is a fee, so nothing is counted twice.
+  const twice = parseReceipt(`Noodle Bar
+Dumplings $100.00
+Gratuity $20.00
+Auto Gratuity $5.00
+Total $125.00`);
+  assert.equal(twice.tip, 2000);
+  assert.deepEqual(twice.fees.map((f) => f.amount), [500]);
+  // Service charges stay fees: they are not the tip.
+  const svc = parseReceipt(`Noodle Bar
+Dumplings $100.00
+Service Charge $3.00
+Total $103.00`);
+  assert.equal(svc.tip, null);
+  assert.deepEqual(svc.fees.map((f) => f.amount), [300]);
+  const suggested = parseReceipt(`Noodle Bar
+Dumplings $100.00
+Subtotal $100.00
+Suggested gratuity 18% $18.00
+Total $100.00`);
+  assert.equal(suggested.tip, null);
 });

@@ -12,6 +12,10 @@ const FEE = /gratuity|\bfees?\b|service\s*charge|auto\s*grat|kitchen\s*appreciat
 // A tip someone already wrote in or added at the register, as opposed to the
 // "suggested tip: 18% = ..." lines many receipts print.
 const PAID_TIP = /^\s*(added\s*)?(tip|tips|tip\s*amount|gratuity\s*added)\s*:?\s*$/i;
+// An automatic gratuity on a large table is the tip, already charged. Reading
+// it as a fee would leave Chit asking for a second tip on top of it.
+const AUTO_GRAT = /gratuity|auto\s*grat/i;
+const SUGGESTED = /suggest|recommend|if\s*you\s*wish/i;
 const DISCOUNT = /discount|coupon|promo|\bcomp\b|happy\s*hour\s*adj/i;
 const TIP = /\btip\b|suggested|\d{2}\s*%/i;
 const SKIP = /visa|master\s*card|amex|discover|\bcash\b|change\s*due|\bcard\b|\bauth|approv|thank|server|\btable\b|guest|\bchk\b|check\s*#|order\s*#|\bdate\b|\btime\b|signature|x{3,}|\*{4}|balance\b(?!\s*due)|tender|payment|receipt|merchant|terminal/i;
@@ -59,7 +63,11 @@ function trimNoise(line, { tail = true } = {}) {
   const junk = (w) => !/[a-z0-9]/i.test(w) || /[^a-z0-9'&.,$:#/()-]/i.test(w);
   // Short scraps up front: one stray character, or two with lowercase or
   // punctuation ("id", "i]"). Two capitals ("OJ", "BL") may be a real word.
-  const lead = (w) => junk(w) || (w.length === 1 && !/\d/.test(w)) || (w.length === 2 && !/^(\d+|[A-Z]{2})$/.test(w));
+  // So is a short lowercase run with no vowel in it ("ptr)", "fk"), which is
+  // wood grain or a crease read as letters — and which, left in place, hides
+  // the quantity that follows it.
+  const vowelless = (w) => w.length <= 4 && /[a-z]/.test(w) && !/\d/.test(w) && !/[aeiouy]/i.test(w);
+  const lead = (w) => junk(w) || vowelless(w) || (w.length === 1 && !/\d/.test(w)) || (w.length === 2 && !/^(\d+|[A-Z]{2})$/.test(w));
   while (t.length > 1 && lead(t[0])) t.shift();
   // A lone "|" or "=" partway through means the rest is shading, not text.
   const cut = t.findIndex((w, k) => k > 0 && junk(w));
@@ -117,13 +125,55 @@ function looksLikeWords(s) {
   return letters >= 4 && inWords / letters >= 0.8 && words.some((w) => /^[a-z']{4,}$/i.test(w));
 }
 
+const keyOf = (t) => (SUBTOTAL.test(t) ? "subtotal" : TAX.test(t) ? "tax" : TOTAL.test(t) ? "total" : null);
+
+// A wide gap between an item and its price, or a crease across the paper, can
+// leave the reader splitting one printed line into two: the name on one line
+// and the amount alone on the next (or the one before). Join those back up
+// before anything else reads them. Only plain item names qualify — a stray
+// "Subtotal" or "Tax" on its own line is realignTotals' job, not this.
+// Only a line that reads like a dish gets joined to a loose amount. Junk off
+// the table ("Seed ke ne", "Powered by Toast") carries one- and two-letter
+// scraps; a menu line is whole words, with at most a quantity in front.
+function dishLike(label) {
+  const words = label.split(/\s+/).filter(Boolean);
+  const letters = words.filter((w) => /[a-z]/i.test(w));
+  return letters.length > 0
+    && letters.every((w) => /^[a-z'&.-]{3,}$/i.test(w) && /[aeiouy]/i.test(w))
+    && words.every((w) => /^[a-z'&.-]+$/i.test(w) || /^\d{1,2}[xX]?$/.test(w))
+    && label.replace(/[^a-z]/gi, "").length >= 4;
+}
+
+// `from` is where the items can start: the line after the street address, or
+// failing that anything but the first line. The restaurant's own name reads as
+// dish-like too, and it often sits right above the first amount on the slip.
+function joinWrapped(lines, from) {
+  const price = lines.map(findPrice);
+  const labels = lines.map((l, i) => trimNoise(price[i] ? l.slice(0, price[i].index) : l, { tail: false }));
+  const itemName = (i) => i >= from && i < lines.length && !price[i] && dishLike(labels[i])
+    && !keyOf(labels[i]) && ![SKIP, TIP, FEE, DISCOUNT, PAID_TIP, AUTO_GRAT].some((re) => re.test(labels[i]));
+  const loose = (i) => i >= 0 && i < lines.length && price[i] && !/[a-z]{2,}/i.test(labels[i]);
+  if (from >= lines.length) return lines;
+  const out = [];
+  for (let i = 0; i < lines.length; i++) {
+    if (itemName(i) && loose(i + 1)) out.push(`${labels[i]} ${price[i + 1].token}`);
+    else if (loose(i) && itemName(i + 1)) out.push(`${labels[i + 1]} ${price[i].token}`);
+    else { out.push(lines[i]); continue; }
+    i++;
+  }
+  return out;
+}
+
 export function parseReceipt(text) {
-  const lines = text.split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
+  const read = text.split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
+  // Trimming the tail would eat the "Dr" or "St" the address is found by.
+  const address = read.findIndex((l) => STREET.test(trimNoise(l, { tail: false })));
+  const lines = joinWrapped(read, address >= 0 ? address + 1 : 1);
   const out = { merchant: "", items: [], tax: 0, fees: [], subtotal: null, total: null, tip: null };
 
   // The name printed right above the street address beats anything earlier,
   // which is often a logo the reader turned into letters.
-  const street = lines.findIndex((l) => STREET.test(trimNoise(l)));
+  const street = address;
   for (let k = street - 1; k >= Math.max(0, street - 2) && !out.merchant; k--) {
     out.merchant = merchantFrom(lines[k]);
   }
@@ -131,7 +181,6 @@ export function parseReceipt(text) {
   // Subtotal, tax and total labels and the amounts near them, in reading
   // order, in case the reader paired them wrong (see realignTotals).
   const summary = [];
-  const keyOf = (t) => (SUBTOTAL.test(t) ? "subtotal" : TAX.test(t) ? "tax" : TOTAL.test(t) ? "total" : null);
 
   for (const [k, line] of lines.entries()) {
     const g = line.match(/\b(?:guests?(?:\s*count)?|covers?|party(?:\s*size)?)\s*[:#]?\s*(\d{1,2})\b/i);
@@ -161,7 +210,11 @@ export function parseReceipt(text) {
     if (cents === null || !/[a-z]{2,}/i.test(label)) continue;
 
     if (SUBTOTAL.test(label)) { out.subtotal = cents; continue; }
-    if (PAID_TIP.test(label)) { out.tip = cents; continue; }
+    // A charged gratuity counts once, as the tip; a second one is a fee.
+    if (!SUGGESTED.test(label) && (PAID_TIP.test(label) || AUTO_GRAT.test(label)) && out.tip == null && cents > 0) {
+      out.tip = cents;
+      continue;
+    }
     if (TAX.test(label)) { out.tax += cents; continue; }
     if (FEE.test(label)) { out.fees.push({ name: capitalize(tidyName(label)), amount: cents }); continue; }
     if (DISCOUNT.test(label)) { out.fees.push({ name: capitalize(tidyName(label)), amount: -Math.abs(cents) }); continue; }
