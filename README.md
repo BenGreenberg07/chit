@@ -24,10 +24,18 @@ Receipt reading uses Tesseract.js from a CDN, so the first read needs an interne
 
 The same people eat together more than once, so Chit keeps the tables it has
 seen. Leave the Table step with two or more people and that table is saved on
-this device; next time it's a card on the Table step, and one tap seats
-everybody again with the pens they had last time. Names you've used are offered
-as you type, and × forgets a table. A table is remembered by who's in it, not by
-when it happened, so the same five friends stay one card however often you eat.
+this device; next time it's a card on the Table step. Tapping the card asks who
+of it is here: everyone is ticked, so tap anyone sitting this meal out, then
+seat the rest. They come back with the pens they wrote with last time, which is
+what makes a pen feel like someone's.
+
+That's the shape of a weekend away with the same ten people. Type the ten in
+once on Friday; at every meal after it, open the card and tap the two who
+aren't there. Anyone already at the table shows as *here* and isn't seated
+twice, so a latecomer is one tap when they arrive. Names you've used are
+offered as you type, and × forgets a table. A table is remembered by who's in
+it, not by when it happened, so the same ten stay one card however often you
+eat.
 
 Nothing about this leaves the phone: remembered tables sit in `localStorage`
 beside the current bill, and clearing the site's data forgets them.

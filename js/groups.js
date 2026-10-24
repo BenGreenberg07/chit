@@ -112,3 +112,16 @@ export function agoText(then, now = Date.now()) {
 function safeStore() {
   try { return globalThis.localStorage ?? null; } catch { return null; }
 }
+
+// Who actually sits down when a remembered table is seated. The same ten
+// people eat together all weekend without all ten being at every meal, so the
+// members are ticked or unticked by index (two friends can share a name), and
+// anyone already at the table keeps their seat rather than arriving twice.
+// `short` is how many were ticked but found no seat.
+export function seatingPlan(seated, members, { skip, max = 10 } = {}) {
+  const off = skip ?? new Set();
+  const here = new Set(seated.map((p) => fold(p.name)));
+  const wanted = members.filter((m, i) => !off.has(i) && clean(m.name) && !here.has(fold(m.name)));
+  const room = Math.max(0, max - seated.length);
+  return { seat: wanted.slice(0, room), short: Math.max(0, wanted.length - room) };
+}

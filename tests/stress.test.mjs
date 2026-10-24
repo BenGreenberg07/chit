@@ -5,6 +5,7 @@ import assert from "node:assert/strict";
 import { computeSplit, findIssues } from "../js/split.js";
 import { parseReceipt, textFromWords } from "../js/parse.js";
 import { Room } from "../js/sync.js";
+import { withGroup, seatingPlan, groupKey, inkForName, knownNames, groupLabel } from "../js/groups.js";
 
 // Small seeded PRNG so failures are reproducible.
 function rng(seed) {
@@ -299,4 +300,126 @@ test("live bills converge no matter the delivery order", async () => {
     for (const phone of phones) assert.equal(JSON.stringify(Object.entries(phone.data).sort()), first, `seed ${seed}`);
     phones.forEach((p) => p.close());
   }
+});
+
+// ---------- remembered tables, weekend-shaped ----------
+
+const INKS = ["#2447B5", "#1C7A4A", "#B1286B", "#C45F12", "#0E7686", "#7A4A26", "#3C4248", "#6B7418", "#5B3CA8", "#8E2F93"];
+const NAMES = ["Ben", "Mia", "Theo", "Ada", "Bo", "Cy", "Bea", "Dee", "Eli", "Fay", "Gus", "Hal", "Ivy", "Jo", "Ben", "BEN", " mia "];
+const MAX = 10;
+
+// The app's own rule for seating someone, mirrored: a free pen, preferring the
+// one they wrote with last time, and never more than ten at a table.
+function seat(table, member) {
+  if (table.length >= MAX) return null;
+  const used = new Set(table.map((p) => p.ink));
+  const ink = member.ink && INKS.includes(member.ink) && !used.has(member.ink)
+    ? member.ink
+    : INKS.find((c) => !used.has(c)) ?? INKS[table.length % INKS.length];
+  const p = { name: member.name.trim(), ink };
+  table.push(p);
+  return p;
+}
+
+test("2000 weekends of seating: ten seats, ten pens, nobody seated twice", () => {
+  for (let seed = 1; seed <= 2000; seed++) {
+    const r = rng(seed * 11);
+    // A weekend's group, sometimes bigger than the table holds.
+    const group = Array.from({ length: int(r, 2, 12) }, (_, i) => ({ name: pick(r, NAMES), ink: pick(r, [...INKS, undefined]) }));
+    const table = [];
+    // Some meals start with a few people already down by hand.
+    for (let k = int(r, 0, 4); k > 0; k--) seat(table, { name: pick(r, NAMES) });
+    const before = table.map((p) => p.name.trim().toLowerCase());
+
+    const off = new Set();
+    for (let i = 0; i < group.length; i++) if (r() < 0.35) off.add(i);
+    const { seat: plan, short } = seatingPlan(table, group, { skip: off, max: MAX });
+
+    // Nobody ticked off is in the plan, and nobody already at the table is.
+    for (const m of plan) {
+      assert.ok(!before.includes(m.name.trim().toLowerCase()), `seed ${seed}: already seated`);
+    }
+    assert.ok(plan.every((m, i) => plan.indexOf(m) === i), `seed ${seed}: same person twice`);
+    const ticked = group.filter((m, i) => !off.has(i) && !before.includes(m.name.trim().toLowerCase()));
+    assert.equal(plan.length + short, ticked.length, `seed ${seed}: everyone ticked is seated or counted short`);
+    assert.ok(plan.length <= MAX - before.length, `seed ${seed}: more than the free seats`);
+
+    for (const m of plan) assert.ok(seat(table, m), `seed ${seed}: plan didn't fit`);
+    assert.ok(table.length <= MAX, `seed ${seed}: ${table.length} at the table`);
+    assert.equal(new Set(table.map((p) => p.ink)).size, table.length, `seed ${seed}: two people share a pen`);
+    // Seating the same table again adds nobody: everyone is already there.
+    const again = seatingPlan(table, group, { skip: off, max: MAX });
+    assert.deepEqual(again.seat, [], `seed ${seed}: seated the same people twice`);
+  }
+});
+
+test("2000 weekends of remembering: one card per set of people, newest first", () => {
+  for (let seed = 1; seed <= 2000; seed++) {
+    const r = rng(seed * 13);
+    let list = [];
+    const saved = new Map();
+    let now = 1_700_000_000_000;
+    for (let meal = 0; meal < int(r, 1, 25); meal++) {
+      now += int(r, 1, 100000);
+      const people = Array.from({ length: int(r, 0, 11) }, () => ({ name: pick(r, NAMES), ink: pick(r, INKS) }));
+      const named = people.filter((p) => p.name.trim());
+      list = withGroup(list, people, now, "g" + meal);
+      if (named.length >= 2) saved.set(groupKey(named.map((p) => p.name)), now);
+
+      // Every invariant the Table step reads back.
+      assert.ok(list.length <= 12, `seed ${seed}: ${list.length} cards kept`);
+      assert.equal(new Set(list.map((g) => g.key)).size, list.length, `seed ${seed}: two cards, same people`);
+      assert.ok(list.every((g, i) => i === 0 || list[i - 1].at >= g.at), `seed ${seed}: out of order`);
+      for (const g of list) {
+        assert.ok(g.people.length >= 2 && g.people.every((p) => p.name.trim()), `seed ${seed}: an empty seat was kept`);
+        assert.equal(g.key, groupKey(g.people.map((p) => p.name)), `seed ${seed}: key doesn't match its people`);
+        assert.equal(saved.get(g.key), g.at, `seed ${seed}: card time is not when those people last ate`);
+        assert.ok(groupLabel(g).length > 0);
+      }
+      // A table of two or more is always reachable again, until it's crowded out.
+      if (named.length >= 2) {
+        const card = list.find((g) => g.key === groupKey(named.map((p) => p.name)));
+        assert.ok(card, `seed ${seed}: the table just saved is gone`);
+        assert.deepEqual(card.people.map((p) => p.name), named.map((p) => p.name.trim()), `seed ${seed}: names changed`);
+        // Seating it back gives the same table, pens and all.
+        const { seat: back } = seatingPlan([], card.people, { max: MAX });
+        assert.equal(back.length, Math.min(named.length, MAX));
+        assert.deepEqual(back.map((m) => m.ink), card.people.slice(0, MAX).map((m) => m.ink), `seed ${seed}: pens changed`);
+        // The pen offered for a name is the one from the most recent table
+        // that person sat at, which is what makes a pen feel like theirs.
+        for (const m of back) {
+          const newest = list.find((g) => g.people.some((q) => q.name.trim().toLowerCase() === m.name.trim().toLowerCase()));
+          const was = newest.people.find((q) => q.name.trim().toLowerCase() === m.name.trim().toLowerCase());
+          assert.equal(inkForName(m.name, list), was.ink, `seed ${seed}: ${m.name}'s pen`);
+        }
+      }
+      assert.ok(knownNames(list).length <= list.reduce((n, g) => n + g.people.length, 0));
+    }
+  }
+});
+
+test("a whole weekend with one group of ten, different people each meal", () => {
+  const ten = ["Ben", "Mia", "Theo", "Ada", "Bo", "Cy", "Bea", "Dee", "Eli", "Fay"]
+    .map((name, i) => ({ name, ink: INKS[i] }));
+  let list = withGroup([], ten, 1000, "weekend");
+  const day = 86400000;
+  // Friday all ten, Saturday lunch without three, Saturday dinner without one,
+  // Sunday brunch with six. Each meal starts from an empty table.
+  for (const [meal, away] of [["fri", []], ["sat-lunch", [2, 5, 8]], ["sat-dinner", [9]], ["sun", [0, 1, 3, 4]]]) {
+    const card = list.find((g) => g.id === "weekend");
+    assert.ok(card, `${meal}: the weekend's table is still there`);
+    const { seat: plan, short } = seatingPlan([], card.people, { skip: new Set(away), max: MAX });
+    assert.equal(short, 0);
+    assert.equal(plan.length, 10 - away.length, meal);
+    const table = [];
+    for (const m of plan) seat(table, m);
+    assert.equal(new Set(table.map((p) => p.ink)).size, table.length, `${meal}: pens clash`);
+    // Whoever is there keeps the pen they had on Friday.
+    for (const p of table) assert.equal(p.ink, ten.find((m) => m.name === p.name).ink, `${meal}: ${p.name} changed pen`);
+    list = withGroup(list, table, 1000 + day, meal);
+  }
+  // Four meals, four sets of people, and the original ten still one tap away.
+  assert.equal(list.length, 4);
+  assert.ok(list.find((g) => g.id === "weekend"), "the group of ten is still remembered");
+  assert.equal(list.find((g) => g.id === "weekend").people.length, 10);
 });

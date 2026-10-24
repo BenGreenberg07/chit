@@ -2,7 +2,7 @@ import { parseReceipt, textFromWords, readScore, addsUp } from "./parse.js";
 import { flattenLight } from "./prep.js";
 import { computeSplit, findIssues, portionShares } from "./split.js";
 import { Room, newCode, cleanCode } from "./sync.js";
-import { readGroups, rememberGroup, forgetGroup, inkForName, knownNames, groupLabel, agoText } from "./groups.js";
+import { readGroups, rememberGroup, forgetGroup, inkForName, knownNames, groupLabel, agoText, seatingPlan } from "./groups.js";
 
 // Pen colors people write with. Red is kept out: it belongs to conflicts.
 // Ten of them, one per seat: the violets fill the gap between the blue and the
@@ -151,6 +151,9 @@ const FRACTIONS = [[1 / 4, "¼"], [1 / 3, "⅓"], [1 / 2, "½"], [2 / 3, "⅔"],
 const fracLabel = (f) => (FRACTIONS.find(([v]) => Math.abs(v - f) < 0.01) || [0, `${Math.round(f * 100)}%`])[1];
 let openPortion = null;
 let tipEditing = false;
+// The remembered table being seated, and which of its members are sitting this
+// one out: { id, off: Set of member indexes }. Transient, like any open panel.
+let groupPick = null;
 
 // "18%" when the tip is a clean percentage of the food, "17.6%" otherwise.
 function tipPctText(sp) {
@@ -477,6 +480,31 @@ const scribble = (color) => `<svg class="scribble" viewBox="0 0 28 14" style="--
 
 // Tables you've had before, minus the one you're sitting at: tapping one seats
 // everybody at once, which is the difference between ten names and ten taps.
+// Opening a remembered table asks who of it is here, rather than seating
+// everyone: the same group eats together all weekend, two short one night.
+function pickerHTML(g) {
+  const here = new Set(S.people.map((p) => p.name.trim().toLowerCase()));
+  const { seat, short } = seatingPlan(S.people, g.people, { skip: groupPick.off, max: MAX_PEOPLE });
+  return `
+    <div class="group-pick" role="group" aria-label="Who of ${esc(groupLabel(g))} is here">
+      <p class="hint">Tap anyone who isn't here tonight.</p>
+      <div class="chips">${g.people.map((m, i) => {
+        const seated = here.has(m.name.trim().toLowerCase());
+        const on = !groupPick.off.has(i);
+        return `<button class="chip${seated ? " chip-seated" : ""}" style="--ink:${m.ink || "var(--muted)"}"
+          data-action="group-toggle" data-i="${i}" aria-pressed="${seated || on}" ${seated ? "disabled" : ""}>
+          ${scribble(m.ink || "var(--muted)")}${esc(m.name)}${seated ? " <small>here</small>" : ""}</button>`;
+      }).join("")}
+      </div>
+      <div class="dock-go">
+        <button class="btn btn-go" data-action="group-seat" ${seat.length ? "" : "disabled"}>
+          ${seat.length ? `Seat ${seat.length} ${seat.length === 1 ? "person" : "people"}` : "Nobody to seat"}<span aria-hidden="true">→</span></button>
+        <button class="btn-link" data-action="group-close">Cancel</button>
+      </div>
+      ${short ? `<p class="next-note">${short} won't fit: Chit holds ${MAX_PEOPLE}.</p>` : ""}
+    </div>`;
+}
+
 function pastTablesHTML() {
   if (live && !live.host) return "";
   const here = new Set(S.people.map((p) => p.name.trim().toLowerCase()));
@@ -486,13 +514,14 @@ function pastTablesHTML() {
     <section class="groups">
       <h3>Tables you've had before</h3>
       <ul>${groups.map((g) => `
-        <li>
-          <button class="group" data-action="group-load" data-id="${esc(g.id)}">
+        <li class="${groupPick?.id === g.id ? "picking" : ""}">
+          <button class="group" data-action="group-open" data-id="${esc(g.id)}" aria-expanded="${groupPick?.id === g.id}">
             <span class="group-pens" aria-hidden="true">${g.people.slice(0, 6).map((m) => scribble(m.ink || "var(--muted)")).join("")}</span>
             <span class="group-names">${esc(groupLabel(g))}</span>
             <span class="group-meta">${g.people.length} people · ${esc(agoText(g.at))}</span>
           </button>
           <button class="l-del" data-action="group-forget" data-id="${esc(g.id)}" aria-label="Forget ${esc(groupLabel(g))}">×</button>
+          ${groupPick?.id === g.id ? pickerHTML(g) : ""}
         </li>`).join("")}
       </ul>
     </section>`;
@@ -1516,24 +1545,35 @@ const actions = {
   },
   "del-fee": (el) => { S.fees = S.fees.filter((f) => f.id !== el.dataset.id); },
   payer: (el) => { S.payer = el.dataset.id; },
-  // Seat a table you've had before: whoever isn't already here, with the pen
-  // they wrote with last time, until the ten seats run out.
-  "group-load": (el) => {
-    const g = readGroups().find((x) => x.id === el.dataset.id);
-    if (!g) return false;
-    const here = new Set(S.people.map((p) => p.name.trim().toLowerCase()));
-    const missing = g.people.filter((m) => !here.has(m.name.trim().toLowerCase()));
-    const added = missing.map((m) => addPerson(m.name, m.ink)).filter(Boolean);
-    const short = missing.length - added.length;
+  // A remembered table opens as a list of its people to tick off, so the same
+  // group carries a whole weekend without everyone being at every meal.
+  "group-open": (el) => {
+    groupPick = groupPick?.id === el.dataset.id ? null : { id: el.dataset.id, off: new Set() };
+  },
+  "group-close": () => { groupPick = null; },
+  "group-toggle": (el) => {
+    const i = Number(el.dataset.i);
+    if (groupPick.off.has(i)) groupPick.off.delete(i);
+    else groupPick.off.add(i);
+  },
+  // Seat whoever is still ticked, each with the pen they wrote with last time.
+  "group-seat": () => {
+    const g = readGroups().find((x) => x.id === groupPick?.id);
+    if (!g) { groupPick = null; return; }
+    const { seat, short } = seatingPlan(S.people, g.people, { skip: groupPick.off, max: MAX_PEOPLE });
+    const added = seat.map((m) => addPerson(m.name, m.ink)).filter(Boolean);
+    groupPick = null;
     resetPrivate();
-    if (!added.length) {
-      toast(missing.length ? `The table is full at ${MAX_PEOPLE}.` : "They're all at the table already.");
-    } else {
-      const who = added.length > 3 ? `${added.length} more` : added.map((p) => p.name).join(", ");
+    if (!added.length) toast(`The table is full at ${MAX_PEOPLE}.`);
+    else {
+      const who = added.length > 3 ? `${added.length} people` : added.map((p) => p.name).join(", ");
       toast(`Seated ${who}${short ? ` · ${short} didn't fit` : ""}`);
     }
   },
-  "group-forget": (el) => { forgetGroup(el.dataset.id); },
+  "group-forget": (el) => {
+    if (groupPick?.id === el.dataset.id) groupPick = null;
+    forgetGroup(el.dataset.id);
+  },
   "del-person": (el) => {
     const id = el.dataset.id;
     S.people = S.people.filter((p) => p.id !== id);
