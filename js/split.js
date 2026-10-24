@@ -6,6 +6,15 @@
 // penny goes to that index (the person who paid) before anyone else.
 export function allocate(total, weights, first = -1) {
   if (total < 0) return allocate(-total, weights, first).map((c) => -c);
+  // A discount or a gift card bigger than the food can leave shares pointing
+  // both ways, or every one of them negative. Shares still have to add up to
+  // the total, so weigh by what each share is worth and leave the signs out of
+  // it: whoever is owed nothing pays nothing, and a refund everyone is due
+  // comes back in proportion to what each person ordered.
+  if (weights.some((w) => w < 0)) {
+    const owed = weights.map((w) => Math.max(w, 0));
+    return allocate(total, owed.some((w) => w > 0) ? owed : weights.map((w) => -w), first);
+  }
   const sum = weights.reduce((a, b) => a + b, 0);
   if (!total || sum <= 0) return weights.map(() => 0);
   const raw = weights.map((w) => (total * w) / sum);
