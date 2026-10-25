@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { allocate, computeSplit, findIssues, portionShares } from "../js/split.js";
-import { parseReceipt, addsUp } from "../js/parse.js";
+import { parseReceipt, addsUp, linesFromWords, mergeReads } from "../js/parse.js";
 import { withGroup, readGroups, inkForName, knownNames, groupLabel, agoText } from "../js/groups.js";
 
 const sum = (a) => a.reduce((x, y) => x + y, 0);
@@ -446,4 +446,67 @@ Subtotal $100.00
 Suggested gratuity 18% $18.00
 Total $100.00`);
   assert.equal(suggested.tip, null);
+});
+
+// Prices printed half a line off their labels, with the offset drifting down
+// a curled slip (+10px at the top to -45px at the totals), as on a diner
+// receipt read word by word. Nearest-line pairing gets the bottom wrong.
+test("pairs prices with labels by order when the price column drifts", () => {
+  const rows = [
+    ["SS Cakes", "$9.98", 1210, 10], ["ADD Strawberries", null, 1262, 0], ["Cakes", "$10.99", 1313, 9],
+    ["2 Egg Sand", "$17.98", 1369, 5], ["ADD Bacon", null, 1580, 0], ["Pumpkin Cakes", "$19.97", 1745, -6],
+    ["The Diner", "$16.99", 1915, -14], ["ADD Feta", null, 2205, 0], ["2 Coffee", "$7.98", 2262, -26],
+    ["Lg Juice", "$5.19", 2325, -33], ["Subtotal", "$41.88", 2444, -34], ["Tax", "$2.93", 2510, -43],
+    ["Tip", "$8.38", 2574, -47], ["Total", "$53.19", 2632, -44],
+  ];
+  const words = [];
+  for (const [label, price, y, dy] of rows) {
+    let x = 200;
+    for (const t of label.split(" ")) { words.push({ text: t, confidence: 95, bbox: { x0: x, x1: x + t.length * 22, y0: y - 18, y1: y + 18 } }); x += t.length * 22 + 20; }
+    if (price) words.push({ text: price, confidence: 95, bbox: { x0: 1080, x1: 1200, y0: y + dy - 18, y1: y + dy + 18 } });
+  }
+  const r = parseReceipt(linesFromWords(words));
+  assert.deepEqual(r.items.map((i) => [i.name, i.qty, i.price]), [
+    ["SS Cakes", 1, 998], ["Cakes", 1, 1099], ["Egg Sand", 2, 1798], ["Pumpkin Cakes", 1, 1997],
+    ["The Diner", 1, 1699], ["Coffee", 2, 798], ["Lg Juice", 1, 519],
+  ]);
+  assert.deepEqual([r.subtotal, r.tax, r.tip, r.total], [4188, 293, 838, 5319]);
+});
+
+test("one read fills in quantities and names another read missed", () => {
+  // Word by word: every price, but the quantity column and a name lost.
+  const words = { items: [{ name: "ue abi rria", qty: 2, price: 3190 }, { name: "Al Pastor Taco", qty: 1, price: 3000 }, { name: "Asada Taco", qty: 1, price: 1500 }] };
+  // By lines: quantities, but one price lost to a smudge.
+  const lines = { items: [{ name: "Quesabirria", qty: 2, price: 3190 }, { name: "Al Pastor Taco", qty: 8, price: 9 }, { name: "Asada Taco", qty: 4, price: 1500 }] };
+  const merged = mergeReads(words, [lines]);
+  assert.deepEqual(merged.items.map((i) => [i.name, i.qty, i.price]), [["Quesabirria", 2, 3190], ["Al Pastor Taco", 8, 3000], ["Asada Taco", 4, 1500]]);
+  // A clean name is never swapped for a longer one with a scrap in front.
+  const kept = mergeReads({ items: [{ name: "SS Cakes", qty: 1, price: 998 }] }, [{ items: [{ name: "Seg SS Cakes", qty: 1, price: 998 }] }]);
+  assert.equal(kept.items[0].name, "SS Cakes");
+});
+
+test("half-hidden slips: cut-off labels, an address read as a price", () => {
+  // Another slip covers the left edge: "TAX" is gone and "TOTAL" reads
+  // "DTAL"; "S. 16TH ST." reads like $8.16; the subtotal's 5 faded to a 3.
+  const r = parseReceipt(`VICE RITTENHOUSE
+== 8. 16TH 57.
+Pad See Ew - Chicken $36.00
+Pad See Ew - Beef $19.00
+Pad See Ew - Shrimp $20.00
+SUBTOTAL $73.00
+$6.00
+DTAL $81.00`);
+  assert.deepEqual(r.items.map((i) => i.price), [3600, 1900, 2000]);
+  assert.deepEqual([r.subtotal, r.tax, r.total], [7500, 600, 8100]);
+});
+
+test("the name beside the phone number beats a logo read as letters", () => {
+  const r = parseReceipt(`MY PIZZERIA
+Date: 10/3/26 Time: 6:42 pm
+Pizzata 215-546-7200
+2 Size Queen Margherita $54.00
+Subtotal $54.00
+Total $54.00`);
+  assert.equal(r.merchant, "Pizzata");
+  assert.equal(parseReceipt("Taqueria\n8 Al Pastor Taco 30.00\nTotal 30.00").items[0].name, "Al Pastor Taco");
 });

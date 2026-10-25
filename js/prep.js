@@ -118,3 +118,150 @@ function blur(src, w, h, r) {
   }
   return dst;
 }
+
+// ---------- finding the slip ----------
+// Receipts get photographed on granite, wood grain, patterned tablecloths.
+// The reader turns that texture into hundreds of fake words that land on the
+// same lines as the real ones. So before reading: find the paper, crop to it,
+// and blank out whatever else is left in the frame.
+//
+// Paper is the large, bright, mostly colorless region (warm restaurant light
+// tints it, so the color limit is loose; brightness does most of the work). Per block, take the median
+// brightness (text is sparse, so it barely moves the median) and saturation;
+// split bright from dark with Otsu's threshold; keep the biggest connected
+// bright, gray region. Returns { x, y, w, h, keep } or null when there's no
+// clear slip (a photo that's all receipt needs no cropping).
+
+const PAPER_CELL = 24;
+
+export function findPaper(rgba, width, height) {
+  const bw = Math.ceil(width / PAPER_CELL);
+  const bh = Math.ceil(height / PAPER_CELL);
+  const bright = new Float32Array(bw * bh);
+  const sat = new Float32Array(bw * bh);
+  const hist = new Uint32Array(256);
+  for (let by = 0; by < bh; by++) {
+    for (let bx = 0; bx < bw; bx++) {
+      hist.fill(0);
+      let n = 0;
+      let s = 0;
+      for (let y = by * PAPER_CELL; y < Math.min(height, (by + 1) * PAPER_CELL); y += 2) {
+        for (let x = bx * PAPER_CELL; x < Math.min(width, (bx + 1) * PAPER_CELL); x += 2) {
+          const p = (y * width + x) * 4;
+          const r = rgba[p], g = rgba[p + 1], b = rgba[p + 2];
+          const mx = Math.max(r, g, b);
+          hist[(0.299 * r + 0.587 * g + 0.114 * b) | 0]++;
+          s += mx ? (mx - Math.min(r, g, b)) / mx : 0;
+          n++;
+        }
+      }
+      let need = n / 2;
+      let v = 0;
+      while (v < 255 && need > 0) need -= hist[v++];
+      bright[by * bw + bx] = v;
+      sat[by * bw + bx] = s / n;
+    }
+  }
+
+  const cut = otsu(bright);
+  const paper = new Uint8Array(bw * bh);
+  for (let i = 0; i < paper.length; i++) paper[i] = bright[i] > cut && sat[i] < 0.45 ? 1 : 0;
+
+  // Shadow falls across slips (a hand, a phone, a glass). Shaded paper is
+  // darker but still colorless, and it darkens gradually, while the slip's
+  // edge against the table is a sudden jump. Grow the paper into neighbors
+  // like that.
+  const queue = [];
+  for (let i = 0; i < paper.length; i++) if (paper[i]) queue.push(i);
+  while (queue.length) {
+    const j = queue.pop();
+    const x = j % bw;
+    const y = (j / bw) | 0;
+    for (const k of [x > 0 ? j - 1 : -1, x < bw - 1 ? j + 1 : -1, y > 0 ? j - bw : -1, y < bh - 1 ? j + bw : -1]) {
+      if (k < 0 || paper[k]) continue;
+      if (sat[k] < 0.22 && bright[k] > 55 && Math.abs(bright[k] - bright[j]) < 22) {
+        paper[k] = 1;
+        queue.push(k);
+      }
+    }
+  }
+
+  // Biggest connected patch of paper.
+  const label = new Int32Array(bw * bh).fill(-1);
+  let best = -1;
+  let bestSize = 0;
+  const stack = [];
+  for (let i = 0; i < paper.length; i++) {
+    if (!paper[i] || label[i] >= 0) continue;
+    let size = 0;
+    stack.push(i);
+    label[i] = i;
+    while (stack.length) {
+      const j = stack.pop();
+      size++;
+      const x = j % bw;
+      const y = (j / bw) | 0;
+      for (const k of [x > 0 ? j - 1 : -1, x < bw - 1 ? j + 1 : -1, y > 0 ? j - bw : -1, y < bh - 1 ? j + bw : -1]) {
+        if (k >= 0 && paper[k] && label[k] < 0) { label[k] = i; stack.push(k); }
+      }
+    }
+    if (size > bestSize) { bestSize = size; best = i; }
+  }
+  const share = bestSize / (bw * bh);
+  if (best < 0 || share < 0.06 || share > 0.85) return null;
+
+  // Fill each row of the slip from its left edge to its right edge, so dense
+  // text and the logo count as paper too, then grow it a block for the edges.
+  const keep = new Uint8Array(bw * bh);
+  let x0 = bw, x1 = -1, y0 = bh, y1 = -1;
+  for (let by = 0; by < bh; by++) {
+    let lo = -1, hi = -1;
+    for (let bx = 0; bx < bw; bx++) {
+      if (label[by * bw + bx] === best) { if (lo < 0) lo = bx; hi = bx; }
+    }
+    if (lo < 0) continue;
+    for (let bx = lo; bx <= hi; bx++) keep[by * bw + bx] = 1;
+    x0 = Math.min(x0, lo); x1 = Math.max(x1, hi); y0 = Math.min(y0, by); y1 = Math.max(y1, by);
+  }
+  const grown = new Uint8Array(keep);
+  for (let by = 0; by < bh; by++) {
+    for (let bx = 0; bx < bw; bx++) {
+      if (keep[by * bw + bx]) continue;
+      for (let dy = -1; dy <= 1; dy++) {
+        for (let dx = -1; dx <= 1; dx++) {
+          const yy = by + dy, xx = bx + dx;
+          if (yy >= 0 && yy < bh && xx >= 0 && xx < bw && keep[yy * bw + xx]) grown[by * bw + bx] = 1;
+        }
+      }
+    }
+  }
+  x0 = Math.max(0, x0 - 1); y0 = Math.max(0, y0 - 1); x1 = Math.min(bw - 1, x1 + 1); y1 = Math.min(bh - 1, y1 + 1);
+  return {
+    x: x0 * PAPER_CELL,
+    y: y0 * PAPER_CELL,
+    w: Math.min(width, (x1 + 1) * PAPER_CELL) - x0 * PAPER_CELL,
+    h: Math.min(height, (y1 + 1) * PAPER_CELL) - y0 * PAPER_CELL,
+    keep: (x, y) => grown[((y / PAPER_CELL) | 0) * bw + ((x / PAPER_CELL) | 0)] === 1,
+  };
+}
+
+function otsu(values) {
+  const hist = new Uint32Array(256);
+  for (const v of values) hist[Math.max(0, Math.min(255, v | 0))]++;
+  const total = values.length;
+  let sum = 0;
+  for (let i = 0; i < 256; i++) sum += i * hist[i];
+  let sumB = 0, wB = 0, best = 0, cut = 128;
+  for (let t = 0; t < 256; t++) {
+    wB += hist[t];
+    if (!wB) continue;
+    const wF = total - wB;
+    if (!wF) break;
+    sumB += t * hist[t];
+    const mB = sumB / wB;
+    const mF = (sum - sumB) / wF;
+    const between = wB * wF * (mB - mF) ** 2;
+    if (between > best) { best = between; cut = t; }
+  }
+  return cut;
+}

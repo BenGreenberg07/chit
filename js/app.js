@@ -1,5 +1,5 @@
-import { parseReceipt, textFromWords, readScore, addsUp } from "./parse.js";
-import { flattenLight } from "./prep.js";
+import { parseReceipt } from "./parse.js";
+import { readPhoto } from "./read.js";
 import { computeSplit, findIssues, portionShares } from "./split.js";
 import { Room, newCode, cleanCode, newCardId, cleanCardId, pointCard, readCard } from "./sync.js";
 import { readGroups, rememberGroup, forgetGroup, inkForName, knownNames, groupLabel, agoText, seatingPlan } from "./groups.js";
@@ -994,40 +994,6 @@ function warmReader() {
   reader.catch(() => {});
   return reader;
 }
-async function preparePhoto(src) {
-  // img.decode() can stall when the browser deprioritizes the tab; the plain
-  // load event always fires.
-  const img = new Image();
-  await new Promise((resolve, reject) => {
-    img.onload = resolve;
-    img.onerror = () => reject(new Error("image"));
-    img.src = src;
-  });
-  const w = img.naturalWidth;
-  // ~1500px wide is plenty for receipt text; bigger only makes OCR slower.
-  const scale = w < 1200 ? Math.min(2, 1500 / w) : Math.min(1, 1500 / w);
-  const c = document.createElement("canvas");
-  c.width = Math.round(w * scale);
-  c.height = Math.round(img.naturalHeight * scale);
-  const g = c.getContext("2d", { willReadFrequently: true });
-  g.drawImage(img, 0, 0, c.width, c.height);
-  const raw = g.getImageData(0, 0, c.width, c.height).data.slice();
-  // Even out shadows and glare so faded or shaded prices still read.
-  return (opts) => {
-    const px = g.getImageData(0, 0, c.width, c.height);
-    px.data.set(flattenLight(raw, c.width, c.height, opts));
-    g.putImageData(px, 0, 0);
-    return c;
-  };
-}
-
-async function readOnce(worker, canvas) {
-  const { data } = await worker.recognize(canvas);
-  const lines = data.lines?.length
-    ? data.lines
-    : (data.blocks || []).flatMap((b) => b.paragraphs.flatMap((p) => p.lines));
-  return parseReceipt(lines.length ? textFromWords(lines) : data.text);
-}
 
 function loadParsed(r) {
   const keep = { people: S.people, payer: S.payer, claimMode: S.claimMode };
@@ -1051,7 +1017,6 @@ async function readReceipt(src, fallback) {
   try {
     const worker = warmReader();
     if (!worker) throw new Error("reader");
-    const prepared = await preparePhoto(src);
     readerProgress = (m) => {
       const reading = m.status === "recognizing text";
       ocr.progress = reading ? m.progress : 0;
@@ -1061,15 +1026,7 @@ async function readReceipt(src, fallback) {
       const label = $(".progress-label");
       if (label) label.textContent = !reading ? "Getting the reader ready…" : secondLook ? `Taking a second look… ${pct}%` : `${pct}% read`;
     };
-    const w = await worker;
-    let r = await readOnce(w, prepared());
-    // Glare or a washed-out print: if the read doesn't add up, look again
-    // with a harder contrast stretch and keep whichever read checks out.
-    if (!addsUp(r)) {
-      secondLook = true;
-      const again = await readOnce(w, prepared({ strong: true }));
-      if (readScore(again) > readScore(r)) r = again;
-    }
+    const r = await readPhoto(src, await worker, { onRetry: () => { secondLook = true; } });
     readerProgress = null;
     if (!r.items.length) throw new Error("empty");
     loadParsed(r);
