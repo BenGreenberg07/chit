@@ -715,6 +715,59 @@ body.dragging .drop { transform: scale(1.01); }
 .code-small { margin: 12px 0 0; text-align: center; font-size: 13.5px; color: var(--muted); }
 .code-small .num { color: var(--ui); font-weight: 600; letter-spacing: 0.14em; }
 
+/* Tap card: the row on the live sheet and the card sheet */
+.tap-row {
+  display: grid; grid-template-columns: auto 1fr auto; align-items: center; gap: 12px;
+  width: 100%; margin-top: 16px; padding: 12px 14px;
+  border: 1.5px solid var(--rule); border-radius: 12px;
+  background: var(--field); color: var(--ui); text-align: left;
+  font: 500 15px/1.25 var(--f-ui); cursor: pointer;
+  transition: border-color 0.2s, transform 0.15s var(--ease);
+}
+.tap-row:hover { border-color: var(--blue); }
+.tap-row:active { transform: scale(0.98); }
+.tap-row b { display: block; font-weight: 600; }
+.tap-row small { color: var(--muted); font-size: 13px; }
+.tap-row-icon { display: grid; place-items: center; width: 36px; height: 36px; border-radius: 9px; background: color-mix(in srgb, var(--blue) 12%, transparent); }
+.tap-row-icon svg { width: 22px; height: 22px; fill: none; stroke: var(--blue); stroke-width: 1.8; stroke-linecap: round; }
+
+.card-art { display: block; width: 190px; margin: 4px auto 14px; overflow: visible; }
+.card-body { fill: var(--blue); }
+.card-chip { fill: color-mix(in srgb, var(--on-solid) 30%, transparent); }
+.card-mark { font: 700 22px var(--f-ui); letter-spacing: -0.04em; fill: var(--on-solid); }
+.card-waves path { fill: none; stroke: var(--blue); stroke-width: 6; stroke-linecap: round; opacity: 0.18; }
+.card-check { fill: none; stroke: var(--on-solid); stroke-width: 9; stroke-linecap: round; stroke-linejoin: round; stroke-dasharray: 70; stroke-dashoffset: 70; }
+.art-reading .card-body { animation: card-float 1.6s ease-in-out infinite; }
+.art-reading .card-waves path { animation: wave 1.2s ease-in-out infinite; }
+.art-reading .card-waves path:nth-child(2) { animation-delay: 0.15s; }
+.art-reading .card-waves path:nth-child(3) { animation-delay: 0.3s; }
+.art-done .card-body { animation: card-land 0.5s var(--ease) both; transform-box: fill-box; transform-origin: center; }
+.art-done .card-check { animation: draw 0.45s 0.2s var(--ease) forwards; }
+.art-done .card-waves path { stroke: var(--ok); animation: wave-out 0.9s 0.1s ease-out both; }
+.art-done .card-waves path:nth-child(2) { animation-delay: 0.2s; }
+.art-done .card-waves path:nth-child(3) { animation-delay: 0.3s; }
+.art-idle .card-check { display: none; }
+.art-idle .card-waves path { opacity: 0.5; }
+.tap-card.swap > :not(.sheet-grip) { animation: rise 0.3s var(--ease) both; }
+@keyframes wave { 0%, 100% { opacity: 0.15; } 40% { opacity: 1; } }
+@keyframes wave-out { 0% { opacity: 0; } 30% { opacity: 1; } 100% { opacity: 0.25; } }
+@keyframes card-float { 50% { transform: translateY(-4px); } }
+@keyframes card-land { 0% { transform: scale(0.94); } 60% { transform: scale(1.03); } 100% { transform: scale(1); } }
+.card-link {
+  margin: 16px 0 0; padding: 12px 14px; border-radius: 10px;
+  background: var(--table); color: var(--ui);
+  font-size: 13.5px; overflow-wrap: anywhere; user-select: all;
+}
+.card-actions { display: grid; gap: 10px; margin-top: 14px; }
+.card-actions .btn { width: 100%; }
+.card-steps { margin: 16px 0 0; padding-left: 20px; color: var(--ui); font-size: 15px; line-height: 1.5; }
+.card-steps li + li { margin-top: 4px; }
+.card-note { margin: 14px 0 0; font-size: 13px; line-height: 1.45; color: var(--muted); }
+@media (prefers-reduced-motion: reduce) {
+  .card-art * { animation: none !important; }
+  .art-done .card-check { stroke-dashoffset: 0; }
+}
+
 .tip-later { margin: -12px 0 18px; }
 .tip-paid .tip-pct { font-size: 56px; }
 .tip-paid .hint { margin: 0; }

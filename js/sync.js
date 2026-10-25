@@ -196,3 +196,45 @@ export class Room {
     return [...this.peers.values()].filter((t) => t > cutoff).length;
   }
 }
+
+// ---------- tap cards ----------
+// An NFC card holds a fixed link (…/chit/#tap=ID). Where it leads is a note on
+// the relay: the host's phone posts the current bill's code to the card's
+// topic, and a phone that taps the card reads the newest note. The relay keeps
+// notes 12 hours, which also means a card left linked overnight goes quiet.
+
+export function newCardId() {
+  const bytes = crypto.getRandomValues(new Uint8Array(8));
+  return [...bytes].map((b) => ALPHABET[b % ALPHABET.length]).join("");
+}
+
+export function cleanCardId(raw) {
+  return String(raw || "").toUpperCase().replace(/[^A-Z0-9]/g, "").slice(0, 12);
+}
+
+const cardTopic = (id) => RELAY + "chit-v1-card-" + id.toLowerCase();
+
+// Point the card at a bill, or at nothing (code null) when sharing stops.
+export async function pointCard(id, code, merchant = "") {
+  const res = await fetch(cardTopic(id), {
+    method: "POST",
+    body: JSON.stringify({ code, merchant: merchant.slice(0, 40), at: Date.now() }),
+  });
+  if (!res.ok) throw new Error("card");
+}
+
+// The bill the card points at now: { code, merchant, at } or null.
+export async function readCard(id) {
+  const res = await fetch(cardTopic(id) + "/json?poll=1&since=latest", { cache: "no-store" });
+  if (!res.ok) throw new Error("card");
+  const lines = (await res.text()).trim().split("\n").filter(Boolean);
+  for (const line of lines.reverse()) {
+    try {
+      const e = JSON.parse(line);
+      if (e.event !== "message") continue;
+      const note = JSON.parse(e.message);
+      return note.code ? note : null;
+    } catch {}
+  }
+  return null;
+}

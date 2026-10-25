@@ -1,7 +1,7 @@
 import { parseReceipt, textFromWords, readScore, addsUp } from "./parse.js";
 import { flattenLight } from "./prep.js";
 import { computeSplit, findIssues, portionShares } from "./split.js";
-import { Room, newCode, cleanCode } from "./sync.js";
+import { Room, newCode, cleanCode, newCardId, cleanCardId, pointCard, readCard } from "./sync.js";
 import { readGroups, rememberGroup, forgetGroup, inkForName, knownNames, groupLabel, agoText, seatingPlan } from "./groups.js";
 
 // Pen colors people write with. Red is kept out: it belongs to conflicts.
@@ -72,6 +72,11 @@ let lastShared = {};
 let lastHostStep = null;
 let joining = null;
 let liveSheet = false;
+// Tap card: the NFC card this phone set up (its id), and the card sheet that's
+// open, if any ({ phase, ... }; see tapSheetHTML).
+const CARD_KEY = "chit.card";
+let myCard = (() => { try { return localStorage.getItem(CARD_KEY); } catch { return null; } })();
+let tap = null;
 let ocr = null;
 let photo = null;
 let printing = false;
@@ -846,9 +851,22 @@ function renderOverlay() {
   const o = $("#overlay");
   const id = privateClaimer();
   renderLivePill();
-  if (joining || liveSheet) {
-    o.innerHTML = joining ? joinSheetHTML() : liveSheetHTML();
-    if (!joining) drawQR();
+  if (tap || joining || liveSheet) {
+    const card = tap && o.querySelector(".tap-card");
+    if (card) {
+      // The card sheet stays put while it reads, links and confirms; only its
+      // contents change, so it doesn't slide in again at each step.
+      const next = document.createElement("div");
+      next.innerHTML = tapSheetHTML();
+      const fresh = next.querySelector(".tap-card");
+      if (card.className !== fresh.className || card.innerHTML !== fresh.innerHTML) {
+        card.className = fresh.className + " swap";
+        card.innerHTML = fresh.innerHTML;
+      }
+    } else {
+      o.innerHTML = tap ? tapSheetHTML() : joining ? joinSheetHTML() : liveSheetHTML();
+    }
+    if (!tap && !joining) drawQR();
     document.body.classList.add("locked");
     return;
   }
@@ -1297,6 +1315,8 @@ function startRoom({ seed }) {
 }
 
 function leaveLive() {
+  // The card stops leading to a bill nobody is sharing any more.
+  if (live?.host && myCard) pointCard(myCard, null).catch(() => {});
   room?.close();
   room = null;
   live = null;
@@ -1365,6 +1385,11 @@ function liveSheetHTML() {
         </div>
         <button class="btn btn-go btn-wide" data-action="share-link">Send the link<span aria-hidden="true">→</span></button>
         <p class="code-small">Can't scan? Code <span class="num">${live.code}</span></p>
+        ${live.host ? `<button class="tap-row" data-action="tap-setup">
+          <span class="tap-row-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><rect x="3" y="6" width="13" height="12" rx="2"/><path d="M18.5 9a4.5 4.5 0 0 1 0 6M21 7a8 8 0 0 1 0 10"/></svg></span>
+          <span><b>Tap card</b><small>${myCard ? "Your card leads here" : "Join with a tap, no code"}</small></span>
+          <span aria-hidden="true">→</span>
+        </button>` : ""}
         <p class="label sheet-label">This phone belongs to</p>
         <div class="chips">${S.people.map((p) => `
           <button class="chip" style="--ink:${p.ink}" data-action="set-me" data-id="${p.id}" aria-pressed="${live.me === p.id}">${scribble(p.ink)}${esc(p.name)}</button>`).join("")}
@@ -1392,7 +1417,7 @@ function joinSheetHTML() {
       ${j.error ? `<p class="err" role="alert">${esc(j.error)}</p>` : ""}`;
   } else if (j.phase === "finding") {
     body = `
-      <h2 class="sheet-title">Finding bill <span class="num">${esc(j.code)}</span></h2>
+      <h2 class="sheet-title">${j.merchant ? `Joining ${esc(j.merchant)}` : `Finding bill <span class="num">${esc(j.code)}</span>`}</h2>
       <div class="finding" aria-hidden="true"><i></i><i></i><i></i></div>
       ${j.slow
         ? `<p class="hint">Still listening. Ask whoever started the bill to open Chit on their phone; you'll be let in as soon as they do. If the code might be wrong, try it again.</p>
@@ -1416,6 +1441,150 @@ function joinSheetHTML() {
         <span class="sheet-grip" aria-hidden="true"></span>
         ${body}
         <div class="sheet-foot"><button class="btn-link" data-action="join-cancel">Cancel</button></div>
+      </div>
+    </div>`;
+}
+
+function goLive() {
+  live = { code: newCode(), me: S.payer && person(S.payer) ? S.payer : S.people[0]?.id ?? null, host: true };
+  saveLive();
+  startRoom({ seed: "fresh" });
+  // A card already set up follows the host to each new bill on its own.
+  if (myCard) pointCard(myCard, live.code, S.merchant || "").catch(() => {});
+}
+
+// ---------- tap card ----------
+const cardURL = (id) => `${location.origin}${location.pathname}#tap=${id}`;
+
+function setMyCard(id) {
+  myCard = id;
+  try { localStorage.setItem(CARD_KEY, id); } catch {}
+}
+
+async function linkCard(id) {
+  setMyCard(id);
+  tap = { phase: "linking", id };
+  render();
+  try {
+    await pointCard(id, live.code, S.merchant || "");
+    tap = { phase: "linked", id };
+    navigator.vibrate?.([12, 60, 24]);
+  } catch {
+    tap = { phase: "error", id };
+  }
+  render();
+}
+
+// Someone held a phone to the card. The host's tap points the card at the
+// bill on their phone; anyone else's tap follows the card into that bill.
+async function handleTap(id) {
+  const mine = myCard === id;
+  if (live?.host && mine) return linkCard(id);
+  if (mine && !live && S.items.length) {
+    goLive();
+    return linkCard(id);
+  }
+  tap = { phase: "reading", id };
+  render();
+  let note;
+  try {
+    note = await readCard(id);
+  } catch {
+    tap = { phase: "error", id };
+    render();
+    return;
+  }
+  if (note?.code && note.code === live?.code) {
+    tap = live.host ? { phase: "linked", id } : null;
+    if (!tap) toast("You're already in this bill.");
+  } else if (note?.code && live?.host) {
+    // Hosting something else and tapped a card that leads to another bill.
+    tap = { phase: "choose", id, note };
+  } else if (note?.code) {
+    tap = null;
+    beginJoin(note.code);
+    if (joining) joining.merchant = note.merchant || "";
+  } else if (live?.host) {
+    return linkCard(id);
+  } else {
+    tap = { phase: "empty", id, canLink: S.items.length > 0 };
+  }
+  render();
+}
+
+const CARD_ART = `
+  <svg class="card-art" viewBox="0 0 220 140" aria-hidden="true">
+    <g class="card-waves"><path d="M176 52a26 26 0 0 1 0 36"/><path d="M188 42a40 40 0 0 1 0 56"/><path d="M200 32a54 54 0 0 1 0 76"/></g>
+    <rect class="card-body" x="14" y="16" width="150" height="108" rx="12"/>
+    <rect class="card-chip" x="32" y="46" width="28" height="22" rx="4"/>
+    <text class="card-mark" x="32" y="106">chit</text>
+    <path class="card-check" d="M104 72l14 14 26-30"/>
+  </svg>`;
+
+function tapSheetHTML() {
+  const t = tap;
+  const where = esc(S.merchant || "this bill");
+  let art = "";
+  let body = "";
+  if (t.phase === "setup") {
+    const url = cardURL(t.id);
+    art = "idle";
+    body = `
+      <h2 class="sheet-title">Tap to join</h2>
+      <p class="hint">Put this link on any NFC card or sticker, once. From then on a tap opens Chit and drops people into whatever bill you're hosting. Start a new bill, tap the card, and it follows.</p>
+      <div class="card-link"><span class="num">${esc(url.replace(/^https?:\/\//, ""))}</span></div>
+      <div class="card-actions">
+        ${"NDEFReader" in window ? `<button class="btn btn-go" data-action="tap-write">Write it to a card</button>` : ""}
+        <button class="btn ${"NDEFReader" in window ? "btn-quiet" : "btn-go"}" data-action="tap-copy">Copy the link</button>
+      </div>
+      ${"NDEFReader" in window ? "" : `
+      <ol class="card-steps">
+        <li>Get the free <b>NFC Tools</b> app.</li>
+        <li>Write, then Add a record, then URL. Paste the link.</li>
+        <li>Tap Write and hold the card to the top of your phone.</li>
+      </ol>`}
+      <p class="card-note">Hotel keycards usually can't be written, and writing one can erase your room key. NTAG215 cards or stickers cost under a dollar.</p>`;
+  } else if (t.phase === "writing") {
+    art = "reading";
+    body = `<h2 class="sheet-title">Hold the card to your phone</h2><p class="hint">Keep it against the back of the phone until it buzzes.</p>`;
+  } else if (t.phase === "written") {
+    art = "done";
+    body = `<h2 class="sheet-title">Card ready</h2><p class="hint">Tap it with your phone while you're hosting a bill to point it there.</p>`;
+  } else if (t.phase === "reading" || t.phase === "linking") {
+    art = "reading";
+    body = `<h2 class="sheet-title">${t.phase === "linking" ? "Linking the card" : "Reading the card"}</h2><p class="hint">One second.</p>`;
+  } else if (t.phase === "linked") {
+    art = "done";
+    body = `
+      <h2 class="sheet-title">Card linked</h2>
+      <p class="hint">Anyone who taps it now joins ${where}. Pass it around the table.</p>`;
+  } else if (t.phase === "choose") {
+    const theirs = esc(t.note.merchant || "another bill");
+    body = `
+      <h2 class="sheet-title">This card leads to ${theirs}</h2>
+      <p class="hint">You're hosting ${where} on this phone.</p>
+      <div class="card-actions">
+        <button class="btn btn-go" data-action="tap-join">Join ${theirs}</button>
+        <button class="btn btn-quiet" data-action="tap-link">Point it at ${where}</button>
+      </div>`;
+  } else if (t.phase === "empty") {
+    body = `
+      <h2 class="sheet-title">This card isn't on a bill</h2>
+      <p class="hint">${t.canLink ? "Share the bill on this phone through it, and everyone who taps joins you." : "Whoever owns it can host a live bill and tap it again. It leads to a bill for 12 hours after that."}</p>
+      ${t.canLink ? `<div class="card-actions"><button class="btn btn-go" data-action="tap-link">Share my bill on this card</button></div>` : ""}`;
+  } else {
+    body = `
+      <h2 class="sheet-title">Couldn't reach the card's bill</h2>
+      <p class="hint">${esc(t.message || "Check the connection and try again.")}</p>
+      <div class="card-actions"><button class="btn btn-go" data-action="tap-retry">Try again</button></div>`;
+  }
+  return `
+    <div class="sheet" data-action="tap-close">
+      <div class="sheet-card tap-card ${art ? "art-" + art : ""}" role="dialog" aria-modal="true" data-stop>
+        <span class="sheet-grip" aria-hidden="true"></span>
+        ${art ? CARD_ART : ""}
+        ${body}
+        <div class="sheet-foot"><span></span><button class="btn btn-quiet" data-action="tap-close">${t.phase === "setup" ? "Done" : "Close"}</button></div>
       </div>
     </div>`;
 }
@@ -1479,12 +1648,44 @@ const actions = {
     return false;
   },
   "go-live": () => {
-    live = { code: newCode(), me: S.payer && person(S.payer) ? S.payer : S.people[0]?.id ?? null, host: true };
-    saveLive();
-    startRoom({ seed: "fresh" });
+    goLive();
     liveSheet = true;
   },
   "live-open": () => { liveSheet = true; },
+  "tap-setup": () => {
+    if (!myCard) setMyCard(newCardId());
+    pointCard(myCard, live?.host ? live.code : null, S.merchant || "").catch(() => {});
+    tap = { phase: "setup", id: myCard };
+  },
+  "tap-copy": () => {
+    copyText(cardURL(tap.id)).then(() => toast("Link copied. Paste it into NFC Tools."), () => toast("Couldn't copy. Hold the link to select it."));
+    return false;
+  },
+  "tap-write": () => {
+    const id = tap.id;
+    tap = { phase: "writing", id };
+    new window.NDEFReader().write({ records: [{ recordType: "url", data: cardURL(id) }] })
+      .then(() => { tap = { phase: "written", id }; navigator.vibrate?.([12, 60, 24]); render(); })
+      .catch(() => { tap = { phase: "error", id, message: "The card didn't take the link. Try holding it still a little longer." }; render(); });
+  },
+  "tap-link": () => {
+    if (!live?.host) goLive();
+    linkCard(tap.id);
+    return false;
+  },
+  "tap-join": () => {
+    const note = tap.note;
+    tap = null;
+    beginJoin(note.code);
+    if (joining) joining.merchant = note.merchant || "";
+  },
+  "tap-retry": () => { handleTap(tap.id); return false; },
+  "tap-close": (el, e) => {
+    if (e && e.target.closest("[data-stop]") && !e.target.closest('[data-action="tap-close"]:not(.sheet)')) return false;
+    const reopen = tap?.phase === "setup" && live;
+    tap = null;
+    liveSheet = !!reopen;
+  },
   "sheet-close": (el, e) => {
     if (e && e.target.closest("[data-stop]") && !e.target.closest('[data-action="sheet-close"]:not(.sheet)')) return false;
     liveSheet = false;
@@ -1826,6 +2027,11 @@ if (invite) {
   if (cleanCode(invite[1]) !== live?.code) beginJoin(invite[1]);
 }
 if (live && !room) startRoom({ seed: "resume" });
+const tapped = location.hash.match(/tap=([A-Za-z0-9]{6,12})/);
+if (tapped) {
+  history.replaceState(null, "", location.pathname);
+  handleTap(cleanCardId(tapped[1]));
+}
 render();
 window.addEventListener("load", () => setTimeout(warmReader, 600));
 
